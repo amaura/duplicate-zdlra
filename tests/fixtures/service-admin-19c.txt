@@ -1,0 +1,31 @@
+Service name: pre_app
+Service is enabled
+Server pool: PREM1_pre_app
+Cardinality: 1
+Service role: PRIMARY
+Management policy: AUTOMATIC
+DTP transaction: false
+AQ HA notifications: true
+Global: false
+Commit Outcome: true
+Failover type: TRANSACTION
+Failover method: BASIC
+TAF failover retries: 30
+TAF failover delay: 5
+Connection Load Balancing Goal: LONG
+Runtime Load Balancing Goal: SERVICE_TIME
+TAF policy specification: NONE
+Edition: ORA$BASE
+Pluggable database name: APPTEST
+Maximum lag time: ANY
+SQL Translation Profile:
+Retention: 86400 seconds
+Replay Initiation Time: 300 seconds
+Drain timeout: 30 seconds
+Stop option: transactional
+Session State Consistency: DYNAMIC
+GSM Flags: 0
+Service is defined as a PDB service
+Preferred instances: PRE1
+Available instances: PRE2
+CSS critical: no
