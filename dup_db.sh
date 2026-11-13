@@ -360,11 +360,17 @@ SQL
     read_target_settings "$1"
 }
 
+# TLS credentials are unrelated to duplication. Share this inventory across
+# validation, copying and verification so the exclusion and counts agree.
+wallet_tree_entries() {
+    find "$1" -path "$1/tls" -prune -o -print0
+}
+
 wallet_tree_check() {
     local root=$1 entry walker
     WALLET_ENTRY_COUNT=0
     [[ -d $root && ! -L $root ]] || die 'Missing or unsafe wallet root directory.'
-    # Reject ALL links (including internal, external and broken links), special
+    # Outside the excluded top-level tls entry, reject all links, special
     # files and inaccessible entries. No wallet listing/content enters evidence.
     while IFS= read -r -d '' entry; do
         ((WALLET_ENTRY_COUNT+=1))
@@ -374,7 +380,7 @@ wallet_tree_check() {
         else
             [[ -f $entry && -r $entry ]] || die 'Wallet tree contains an unreadable or nonregular file.'
         fi
-    done < <(find "$root" -print0 2>/dev/null)
+    done < <(wallet_tree_entries "$root" 2>/dev/null)
     walker=$!
     wait "$walker" || die 'Unable to inspect the complete wallet tree.'
     [[ -s $root/tde/cwallet.sso && -s $root/tde_seps/cwallet.sso ]] || die 'Missing/empty required target wallet file: tde/cwallet.sso or tde_seps/cwallet.sso.'
@@ -424,7 +430,7 @@ create_aux_wallet() {
     mkdir -m 700 "$AUX_WALLET_ROOT"
     local entry relative dest walker
     # Copy each regular file independently; never follow links or preserve hard
-    # links. Fresh private directories preserve the entire relative layout.
+    # links. Fresh private directories preserve the included relative layout.
     while IFS= read -r -d '' entry; do
         [[ $entry != "$WALLET_SOURCE" ]] || continue
         relative=${entry#"$WALLET_SOURCE/"}; dest=$AUX_WALLET_ROOT/$relative
@@ -438,7 +444,7 @@ create_aux_wallet() {
             chmod u+rw,go-rwx "$dest" || die 'Cannot protect copied wallet file owner access.'
             cmp -s "$entry" "$dest" || die 'Wallet copy byte verification failed; auxiliary startup is blocked.'
         fi
-    done < <(find "$WALLET_SOURCE" -print0 2>/dev/null)
+    done < <(wallet_tree_entries "$WALLET_SOURCE" 2>/dev/null)
     walker=$!
     wait "$walker" || die 'Incomplete wallet source traversal; auxiliary startup is blocked.'
     wallet_tree_check "$AUX_WALLET_ROOT"
@@ -453,7 +459,7 @@ create_aux_wallet() {
         else
             [[ -f $entry && -r $entry && -f $dest && ! $entry -ef $dest ]] && cmp -s "$entry" "$dest" || die 'Wallet copy completeness verification failed.'
         fi
-    done < <(find "$WALLET_SOURCE" -print0 2>/dev/null)
+    done < <(wallet_tree_entries "$WALLET_SOURCE" 2>/dev/null)
     walker=$!
     wait "$walker" || die 'Unable to verify complete wallet source inventory.'
     [[ $validated == "$expected_entries" ]] || die 'Wallet source inventory changed during copying.'

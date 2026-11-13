@@ -84,7 +84,7 @@ PY
 }
 snapshot_source > "$tmp/source-before"
 
-# Normal mode needs no auxiliary wallet. Copy ALL subdirectories/binary files;
+# Normal mode needs no auxiliary wallet. Copy included subdirectories/binary files;
 # retain source bytes/modes while granting only the copy's owner access.
 reset_wallet --do-duplicate
 [[ $DRY_RUN == 0 && -z $DUP_AUX_WALLET_ROOT ]]; ok
@@ -150,6 +150,43 @@ reject create_aux_wallet
 DUP_AUX_WALLET_ROOT=''
 DUP_AUX_BASE=$tmp/target-alias
 reject create_aux_wallet
+# Ignore only top-level TLS, including external/broken links and directory
+# contents that would otherwise fail validation. Never copy the TLS entry.
+for tls in internal external broken directory; do
+    reset_wallet
+    case $tls in
+        internal) ln -s tde "$TARGET_WALLET/tls" ;;
+        external) ln -s "$tmp/parent" "$TARGET_WALLET/tls" ;;
+        broken) ln -s missing "$TARGET_WALLET/tls" ;;
+        directory)
+            mkdir "$TARGET_WALLET/tls"
+            ln -s missing "$TARGET_WALLET/tls/link"
+            mkfifo "$TARGET_WALLET/tls/pipe" ;;
+    esac
+    create_aux_wallet > /dev/null
+    [[ ! -e $AUX_WALLET_ROOT/tls && ! -L $AUX_WALLET_ROOT/tls ]]; ok
+    cmp "$TARGET_WALLET/tde/cwallet.sso" "$AUX_WALLET_ROOT/tde/cwallet.sso"
+    cleanup_aux_wallet > /dev/null
+    rm -rf "$TARGET_WALLET/tls"
+done
+# A nested entry named tls remains subject to strict validation, as do TDE
+# directories and required credential files.
+for location in tde tde_seps provider; do
+    reset_wallet
+    ln -s missing "$TARGET_WALLET/$location/tls"
+    reject create_aux_wallet
+    grep -q 'symlink' "$tmp/rejected"
+    rm "$TARGET_WALLET/$location/tls"
+done
+for required in tde tde_seps; do
+    reset_wallet
+    mv "$TARGET_WALLET/$required" "$tmp/hidden-directory"
+    ln -s "$tmp/hidden-directory" "$TARGET_WALLET/$required"
+    reject create_aux_wallet
+    grep -q 'symlink' "$tmp/rejected"
+    rm "$TARGET_WALLET/$required"
+    mv "$tmp/hidden-directory" "$TARGET_WALLET/$required"
+done
 for link in internal external broken; do
     reset_wallet
     case $link in
