@@ -18,6 +18,9 @@ The existing PDB refresh implementation and its plan remain unchanged.
 - Accept a command-line directory containing the contents of the source
   `<WALLET_ROOT>/tde` directory. This is a TDE directory, not a complete wallet
   root, and must not require a source `tde_seps` directory.
+- Require portable auto-login input: the supplied directory must contain a
+  usable `cwallet.sso` providing unattended access to the required source CKMS
+  keys on both target nodes. Password-only wallet input is outside this mode.
 - The final copied CDB is allowed to use the source CipherTrust credentials.
 - After stopping the target, the script will back up its existing TDE files and
   install the supplied source TDE contents at the existing `WALLET_ROOT/tde`
@@ -58,7 +61,8 @@ The existing PDB refresh implementation and its plan remain unchanged.
 
 Use `--mode pdb|cdb`, defaulting to `pdb` for backward compatibility.
 Use `--source-wallet-dir PATH` for a directory whose direct children are the
-source TDE files, such as `cwallet.sso` and, when present, `ewallet.p12`.
+source TDE files, including required portable auto-login `cwallet.sso` and,
+when present, `ewallet.p12`.
 Require that directory in CDB mode and reject it in PDB mode rather than ignoring
 it. Never treat its parent as the supplied wallet root.
 
@@ -143,10 +147,14 @@ node-local storage.
 
 Preserve `server_seps`, TLS, and other unrelated target wallet-root directories.
 Do not use a retained target `tde_seps` entry as if it were a source credential.
-Confirm that the supplied TDE material provides usable source HSM authentication
-on these hosts; a local auto-login wallet may not be portable. Fail if the input
-does not provide the required authentication instead of silently falling back
-to target credentials or demanding an unrequested source wallet-root copy.
+The user confirmed portable auto-login input as a requirement: `cwallet.sso`
+must provide usable source HSM authentication on both target hosts without a
+password prompt. Password-only input is unsupported. A source-host-bound local
+auto-login wallet does not satisfy this requirement. Fail if the input does not
+provide the required authentication instead of silently falling back to target
+credentials or demanding an unrequested source wallet-root copy. Structural
+copy validation alone cannot prove actual CKMS key access; the restore and
+encrypted-data validation must establish that access.
 
 Provider libraries, network access, domains, certificates, and historical key
 availability remain prerequisites. The installed source TDE material becomes
@@ -268,9 +276,9 @@ here before treating proposals above as accepted.
 5. **Resolved:** the script backs up the old TDE files after target shutdown and
    installs the supplied source TDE contents at the existing `WALLET_ROOT/tde`
    location on both RAC nodes. Preserve other wallet-root directories.
-6. Does the supplied directory contain portable auto-login source HSM credentials,
-   or only a password-protected wallet? **Recommend portable auto-login input**;
-   settle any required secure password handling before implementation.
+6. **Resolved:** require portable auto-login `cwallet.sso` input that provides
+   unattended access to required source CKMS keys on both target nodes.
+   Password-only wallet input is unsupported.
 7. **Resolved:** the user approved recreation of redo logs and tempfiles.
    Recovery still consumes the backed-up archived redo required by RMAN.
 8. Should the copied PDB be renamed to the existing/requested target PDB name?
@@ -287,8 +295,9 @@ here before treating proposals above as accepted.
 
 Decisions recorded: a new DBID, recreation of redo logs/tempfiles, full target
 restore/recovery downtime, a temporary restore PFILE, script-managed TDE backup
-and installation on both RAC nodes, and a warning-only policy for current
-standbys are approved. Original parameter/password files remain unchanged; final
+and installation on both RAC nodes, portable auto-login wallet input, and a
+warning-only policy for current standbys are approved. Original parameter/password
+files remain unchanged; final
 RAC startup uses the original parameter file. Standby recreation is handled by
 another script. Source credentials on the final copied CDB were already approved
 in the preceding discussion.
