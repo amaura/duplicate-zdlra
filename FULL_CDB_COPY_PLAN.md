@@ -9,6 +9,9 @@ The existing PDB refresh implementation and its plan remain unchanged.
 - Add a full-CDB copy mode to `dup_db.sh`; retain the existing PDB mode.
 - Keep the target parameter file and target password file. Do not restore either
   file from production or replace either with a generated permanent file.
+- A temporary restore PFILE derived from the target configuration is allowed.
+  Keep the original parameter/password files unchanged and use the original
+  parameter file for the final RAC restart.
 - Duplicate the source controlfile and all source CDB datafiles, including root,
   seed, and application PDB datafiles, from ZDLRA backups.
 - Redo logs and tempfiles may be recreated, as explicitly confirmed by the user.
@@ -153,10 +156,10 @@ The user accepts the full restore/recovery outage; direct duplication does not
 need a short cutover or a separately staged database.
 
 Start one controlled target instance in `NOMOUNT` using a temporary PFILE derived
-from the target configuration. Proposed temporary overrides include
+from the target configuration, as approved by the user. Temporary overrides include
 `CLUSTER_DATABASE=FALSE` and isolation of listeners, jobs, Broker, and redo
-transport. This requires agreement that retaining the parameter file allows a
-temporary startup file while the original stays unchanged.
+transport. The original parameter/password files stay unchanged, and final RAC
+startup uses the original parameter file.
 
 Use catalog-based `DUPLICATE DATABASE ... TO <TARGET_DB_NAME>` with an explicit
 temporary `PFILE` and `NOOPEN`. Do not include `SPFILE`, `PASSWORD FILE`,
@@ -255,8 +258,9 @@ here before treating proposals above as accepted.
    must be recreated; another script handles recreation.
 3. **Resolved:** full target downtime during restore/recovery is acceptable.
    Duplicate directly into the stopped target rather than staging another CDB.
-4. Does retention mean unchanged original parameter/password files while allowing
-   a temporary derived PFILE? **Recommend yes** for controlled RAC recovery.
+4. **Resolved:** a temporary restore PFILE derived from the target configuration
+   is allowed. Preserve the original parameter/password files unchanged and use
+   the original parameter file for the final RAC restart.
 5. May the supplied source TDE directory replace the target's active TDE contents
    on all nodes, with the old contents privately retained? **Recommend yes**.
 6. Does the supplied directory contain portable auto-login source HSM credentials,
@@ -277,9 +281,11 @@ here before treating proposals above as accepted.
     database name for direct CDB mode.
 
 Decisions recorded: a new DBID, recreation of redo logs/tempfiles, full target
-restore/recovery downtime, and a warning-only policy for current standbys are
-approved. Standby recreation is handled by another script. Source credentials
-on the final copied CDB were already approved in the preceding discussion.
+restore/recovery downtime, a temporary restore PFILE, and a warning-only policy
+for current standbys are approved. Original parameter/password files remain
+unchanged; final RAC startup uses the original parameter file. Standby recreation
+is handled by another script. Source credentials on the final copied CDB were
+already approved in the preceding discussion.
 Other recommendations remain provisional.
 
 ## References
