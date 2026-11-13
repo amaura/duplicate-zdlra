@@ -1,6 +1,6 @@
 # Full CDB copy mode — implementation plan
 
-Status: interview decisions recorded; plan only, with no implementation changes.
+Status: implementation added on this branch; interview decisions below are retained as the design record. Offline verification and deployment acceptance are described in README.md.
 Branch:
 `codex/full-cdb-copy-mode`, based on `main` at `08d5849`.
 The existing PDB refresh implementation and its plan remain unchanged.
@@ -47,8 +47,7 @@ The existing PDB refresh implementation and its plan remain unchanged.
 - CDB mode uses `--work-dir PATH` and no `--aux-*` arguments. The existing PDB
   mode retains its auxiliary arguments and behavior.
 - Keep catalog-only source access: no connection to the production database.
-- For this branch's current task, write the plan and resolve design questions
-  with the user before changing scripts, tests, or operational configuration.
+- Planning was completed before implementation. Deployment operations remain outside the implementation/offline-verification authorization.
 
 ## Findings from the existing implementation
 
@@ -386,14 +385,13 @@ settings; existing standby health remains outside this mode.
   target service states. Verify that automatic services stay disabled through
   final RAC startup and actual running-state checks occur after restoration.
 - Run shell syntax checks, ShellCheck, and relevant existing/new offline fixtures.
-  For this plan-only task no implementation tests or live Oracle commands run.
+  Implementation runs offline tests only; live Oracle acceptance remains separate.
 - Require later ExaCC/ZDLRA/RAC/CipherTrust acceptance testing. Offline fixtures
   cannot establish real key access, SBT recovery, or successful RAC reopening.
 
 ## Recorded interview decisions
 
-All interview decisions below are resolved. Implementation details must follow
-these choices; the current branch change remains plan-only.
+All interview decisions below are resolved. Implementation follows these choices; no design question is pending.
 
 1. **Resolved:** the refreshed target may receive a new DBID, using ordinary
    independent RMAN duplication; any old target standbys need rebuilding.

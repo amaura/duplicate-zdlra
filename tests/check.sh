@@ -291,3 +291,7 @@ bash "$root/tests/dry-run.sh"
 bash "$root/tests/asm.sh"
 bash "$root/tests/wallet.sh"
 bash "$root/tests/readonly.sh"
+
+bash "$root/tests/cdb.sh"
+python3 "$root/tests/cdb_files.py"
+bash "$root/tests/cdb_readonly.sh"

@@ -18,12 +18,19 @@ LOG='' VPC_PASSWORD=''
 
 diag_usage() {
     cat <<'EOF'
-Usage: bash test_readonly.sh --source-cdb NAME --target-cdb NAME \
+Usage: bash test_readonly.sh [--mode pdb|cdb] --source-cdb NAME --target-cdb NAME \
        --source-pdb NAME --target-pdb NAME \
        --aux-cdb NAME --aux-base PATH [--aux-wallet-root PARENT] \
        [--zdlra-alias ALIAS] [--time "YYYY-MM-DD HH:MM:SS"] \
        [--aux-sga-mb MIB] [--aux-pga-mb MIB] [--redo-reserve-mb MIB] \
        [--output FILE] [--timeout SECONDS]
+
+CDB mode: use --work-dir PATH --source-wallet-dir PATH instead of all --aux-*.
+CDB checks use catalog metadata, whole-target inventories, private source TDE staging
+and retained-file copies. They never install an active wallet or run RMAN.
+Private CDB files stay outside the report at the reported work path.
+Existing standbys produce a recreation warning; no standby/Broker connection occurs.
+Keep lib/cdb_copy.sh and lib/cdb_files.py beside these scripts in lib/.
 
 Run manually as oracle on the designated target primary RAC node, with Bash 4+.
 Keep this script beside dup_db.sh. No internet access or extra Python packages.
@@ -153,6 +160,21 @@ broker_config_probe() {
 
 rman() { die 'Read-only guard: this collector never runs RMAN.'; }
 
+# CDB catalog reads use the same bounded credential lookup as PDB diagnostics.
+discover_credentials() { diag_credentials; }
+
+# Private file copies are allowed; deployment mutations remain guarded here.
+cdb_file() {
+    local action=$1 out=$2; shift 2
+    case $action in probe|prepare|stage|manifest|snapshot|capacity|resource|startup-files|pfile-probe) ;;
+        *) die 'Read-only guard: CDB deployment file operation is prohibited.' ;; esac
+    if ! diag_timeout python3 "$CDB_FILE_TOOL" "$action" home "$ORACLE_HOME" "$@" > "$out" 2> "$out.error"; then
+        redact < "$out.error" | tee -a "$LOG" >&2
+        die "CDB diagnostic file operation failed ($action)."
+    fi
+    rm -f "$out.error"
+}
+
 diag_load_environment() {
     [[ $(id -un) == oracle ]] || die 'Run as oracle on the designated target primary node.'
     # Never retain arbitrary environment-file output, which could contain secrets.
@@ -205,10 +227,17 @@ diag_os() {
     id
     printf 'Bash: %s\n' "$BASH_VERSION"
     cksum "$DIAG_SCRIPT" "$DIAG_LIB"
+    if [[ $MODE == cdb ]]; then cksum "${DIAG_LIB%/*}/lib/cdb_copy.sh" "$CDB_FILE_TOOL"; fi
     if [[ -r /proc/meminfo ]]; then sed -n '1,6p' /proc/meminfo; fi
 }
 
-diag_syntax() { bash -n "$DIAG_LIB"; bash -n "$DIAG_SCRIPT"; }
+diag_syntax() {
+    bash -n "$DIAG_LIB"; bash -n "$DIAG_SCRIPT"
+    if [[ $MODE == cdb ]]; then
+        bash -n "${DIAG_LIB%/*}/lib/cdb_copy.sh"
+        python3 -c 'import pathlib,sys; compile(pathlib.Path(sys.argv[1]).read_text(),sys.argv[1],"exec")' "$CDB_FILE_TOOL"
+    fi
+}
 diag_environment() {
     printf 'Loading /home/oracle/%s.env (file output suppressed).\n' "$TARGET_CDB"
     diag_load_environment
@@ -221,7 +250,8 @@ diag_clients() {
         if [[ -x $ORACLE_HOME/bin/$tool ]]; then printf 'FOUND %s\n' "$ORACLE_HOME/bin/$tool"
         else printf 'MISSING %s\n' "$ORACLE_HOME/bin/$tool"; failed=1; fi
     done
-    if [[ -x $ORACLE_HOME/bin/dgmgrl ]]; then printf 'OPTIONAL (topology-dependent) %s\n' "$ORACLE_HOME/bin/dgmgrl"
+    if [[ $MODE == cdb ]]; then printf 'DGMGRL is not required in CDB mode; all standbys need separate recreation.\n'
+    elif [[ -x $ORACLE_HOME/bin/dgmgrl ]]; then printf 'OPTIONAL (topology-dependent) %s\n' "$ORACLE_HOME/bin/dgmgrl"
     else printf 'DGMGRL absent; permitted only for verified standalone metadata path.\n'; fi
     if [[ -x $ORACLE_HOME/bin/sqlplus ]]; then
         diag_timeout "$ORACLE_HOME/bin/sqlplus" -V > "$RUN/sqlplus-version.txt"
@@ -521,6 +551,9 @@ diag_main() {
     else
         diag_load_environment >/dev/null 2>&1
         diag_check clients 'Oracle client availability and SQL*Plus version' diag_clients
+        if [[ $MODE == cdb ]]; then
+            diag_check cdb 'Full-CDB prerequisites, both-node configuration, exact files, catalog coverage, source wallet staging and deletion-aware capacity' cdb_main
+        else
         diag_check identity 'Verify requested target primary CDB/root/DBID' diag_target
         local identity_dir=$DIAG_LAST_DIR
         if ((DIAG_LAST_RC)); then
@@ -598,7 +631,12 @@ diag_main() {
             else diag_skip catalog-metadata 'Catalog authentication or source identity/incarnation failed.'; fi
         fi
     fi
+    fi # mode-specific diagnostics
+    if [[ $MODE == cdb ]]; then
+        printf '\nCDB NOT RUN: full shutdown/restart prevention, active wallet installation, portable auto-login authentication on both hosts, old-file deletion, restored-controlfile compatibility/file coverage, SBT recovery, encrypted reads and final RAC/service readiness. All old target standbys require recreation by the separate script. Job states are preserved; job handling is external.\n' >> "$DIAG_OUTPUT"
+    else
     printf '\nNOT RUN (requires a later operational test): SBT allocation/media reads, complete source PDB/file coverage, redo continuity, auxiliary startup/recovery, historical HSM key access/key import, encrypted block validation, plug compatibility, service restoration and cutover/apply changes.\nNo application validation performed. Metadata space/range checks are estimates.\n' >> "$DIAG_OUTPUT"
+    fi
     printf '\nSUMMARY: total=%s PASS=%s FAIL=%s SKIP=%s\n' "$DIAG_TOTAL" "$DIAG_PASSED" "$DIAG_FAILED" "$DIAG_SKIPPED" | tee -a "$DIAG_OUTPUT"
     date -u '+Completed UTC: %Y-%m-%dT%H:%M:%SZ' >> "$DIAG_OUTPUT"
     DIAG_FINALIZED=1

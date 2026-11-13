@@ -5,3 +5,6 @@
 *.log
 /logs/
 /read_only_report.txt
+
+__pycache__/
+*.pyc

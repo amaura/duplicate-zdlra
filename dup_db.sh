@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Oracle 19c / ZDLRA PDB refresh. See README.md before running as oracle.
+# Oracle 19c / ZDLRA PDB refresh and full CDB copy. See README.md before running as oracle.
 # Never run with a production ORACLE_SID. All source access is through the catalog.
 # Chained predicates below intentionally fail if ANY validation fails.
 # shellcheck disable=SC2015
@@ -7,13 +7,21 @@ set +x                         # Credentials must never enter a shell trace.
 
 usage() {
     cat <<'EOF'
-Usage: dup_db.sh --source-cdb NAME --target-cdb NAME \
+Usage: dup_db.sh [--mode pdb|cdb] --source-cdb NAME --target-cdb NAME \
                  --source-pdb NAME --target-pdb NAME \
                  --aux-cdb NAME --aux-base PATH [--aux-wallet-root PARENT] \
                  [--zdlra-alias ALIAS] [--aux-sga-mb MIB] [--aux-pga-mb MIB] \
                  [--redo-reserve-mb MIB] [--restore-parallelism N] \
                  [--time "YYYY-MM-DD HH:MM:SS"] [--do-duplicate] [--debug] [--purge-log DAYS]
 
+CDB mode: replace --aux-* with --work-dir PATH --source-wallet-dir PATH.
+CDB mode deletes ALL old target datafiles, redo and tempfiles before restore.
+It retains target configuration/password files and installs source TDE on both nodes.
+All target standbys require separate recreation; this mode never contacts them.
+The supplied directory contains source tde contents directly, including cwallet.sso.
+CDB work parent must exist on both nodes; Python 3 and ASMCMD are required.
+
+The following auxiliary/PDB notes apply to default --mode pdb.
 CDB arguments are DB_NAME. Time is fixed UTC+02:00; no DST conversion.
 Default log retention: 7 days. Run as oracle on the designated target primary node.
 Auxiliary name and filesystem work directory are required.
@@ -62,6 +70,7 @@ load_environment() {
     # function. Only CLI arguments/defaults configure the refresh operation.
     local DUP_AUX_CDB DUP_AUX_BASE DUP_AUX_WALLET_ROOT DUP_ZDLRA_ALIAS
     local DUP_AUX_SGA_MB DUP_AUX_PGA_MB DUP_REDO_RESERVE_MB DUP_RESTORE_PARALLELISM
+    local MODE CDB_WORK_PARENT SOURCE_WALLET_DIR
     # Trusted ExaCC shell configuration, never catalog data. Read unchanged.
     # shellcheck disable=SC1090
     source "$1"
@@ -74,6 +83,7 @@ parse_args() {
         usage >&2
         exit 1
     fi
+    MODE=pdb CDB_WORK_PARENT='' SOURCE_WALLET_DIR=''
     SOURCE_CDB='' TARGET_CDB='' SOURCE_PDB='' TARGET_PDB='' RECOVERY_TIME=''
     DEBUG=0 RETENTION=7 DRY_RUN=1
     DUP_AUX_CDB='' DUP_AUX_BASE='' DUP_AUX_WALLET_ROOT='' DUP_ZDLRA_ALIAS=''
@@ -87,11 +97,14 @@ parse_args() {
             --help) usage; exit 0 ;;
             --debug) DEBUG=1 ;;
             --do-duplicate) DRY_RUN=0 ;;
-            --source-cdb|--target-cdb|--source-pdb|--target-pdb|--time|--purge-log|\
+            --mode|--work-dir|--source-wallet-dir|--source-cdb|--target-cdb|--source-pdb|--target-pdb|--time|--purge-log|\
             --aux-cdb|--aux-base|--aux-wallet-root|--zdlra-alias|--aux-sga-mb|--aux-pga-mb|--redo-reserve-mb|--restore-parallelism)
                 (($#)) && [[ -n $1 && $1 != --* ]] || die "Missing value for $opt"
                 val=$1; shift
                 case $opt in
+                    --mode) MODE=$val ;;
+                    --work-dir) CDB_WORK_PARENT=$val ;;
+                    --source-wallet-dir) SOURCE_WALLET_DIR=$val ;;
                     --source-cdb) SOURCE_CDB=${val^^} ;;
                     --target-cdb) TARGET_CDB=${val^^} ;;
                     --source-pdb) SOURCE_PDB=${val^^} ;;
@@ -114,12 +127,20 @@ parse_args() {
     identifier "$SOURCE_PDB" 30 && identifier "$TARGET_PDB" 30 || die 'PDB names must be 1-30 simple Oracle identifier characters.'
     [[ $SOURCE_CDB != "$TARGET_CDB" ]] || die 'Source and target DB_NAME must differ.'
     positive "$RETENTION" || die '--purge-log requires a positive integer.'
-    [[ -n $DUP_AUX_CDB ]] || die '--aux-cdb is required.'
-    [[ -n $DUP_AUX_BASE ]] || die '--aux-base is required.'
-    identifier "$DUP_AUX_CDB" 8 || die '--aux-cdb must be 1-8 simple Oracle identifier characters.'
-    [[ $DUP_AUX_CDB != "$SOURCE_CDB" && $DUP_AUX_CDB != "$TARGET_CDB" ]] || die 'Auxiliary identity must be distinct from source and target.'
-    safe_path "$DUP_AUX_BASE" || die '--aux-base must be an absolute path without whitespace, parent traversal or SQL metacharacters.'
-    [[ -z $DUP_AUX_WALLET_ROOT ]] || safe_path "$DUP_AUX_WALLET_ROOT" || die '--aux-wallet-root must be an absolute parent path without whitespace, parent traversal or SQL metacharacters.'
+    [[ $MODE == pdb || $MODE == cdb ]] || die '--mode must be pdb or cdb.'
+    if [[ $MODE == cdb ]]; then
+        declare -F cdb_main >/dev/null || die 'CDB mode requires lib/cdb_copy.sh and lib/cdb_files.py beside dup_db.sh.'
+        [[ $seen != *' --aux-'* ]] || die 'CDB mode rejects every --aux-* option.'
+        safe_path "$CDB_WORK_PARENT" && safe_path "$SOURCE_WALLET_DIR" || die 'CDB mode requires safe absolute --work-dir and --source-wallet-dir paths.'
+    else
+        [[ $seen != *' --work-dir '* && $seen != *' --source-wallet-dir '* ]] || die '--work-dir and --source-wallet-dir require --mode cdb.'
+        [[ -n $DUP_AUX_CDB ]] || die '--aux-cdb is required.'
+        [[ -n $DUP_AUX_BASE ]] || die '--aux-base is required.'
+        identifier "$DUP_AUX_CDB" 8 || die '--aux-cdb must be 1-8 simple Oracle identifier characters.'
+        [[ $DUP_AUX_CDB != "$SOURCE_CDB" && $DUP_AUX_CDB != "$TARGET_CDB" ]] || die 'Auxiliary identity must be distinct from source and target.'
+        safe_path "$DUP_AUX_BASE" || die '--aux-base must be an absolute path without whitespace, parent traversal or SQL metacharacters.'
+        [[ -z $DUP_AUX_WALLET_ROOT ]] || safe_path "$DUP_AUX_WALLET_ROOT" || die '--aux-wallet-root must be an absolute parent path without whitespace, parent traversal or SQL metacharacters.'
+    fi
     [[ -z $DUP_ZDLRA_ALIAS || $DUP_ZDLRA_ALIAS =~ ^[A-Za-z0-9_.:/-]+$ ]] || die '--zdlra-alias contains unsupported characters.'
     positive "$DUP_AUX_SGA_MB" || die '--aux-sga-mb requires a positive MiB integer.'
     positive "$DUP_AUX_PGA_MB" || die '--aux-pga-mb requires a positive MiB integer.'
@@ -153,6 +174,7 @@ finish() {
     trap - EXIT
     set +e
     unset VPC_PASSWORD
+    if [[ ${MODE:-pdb} == cdb ]]; then cdb_finish "$rc"; fi
     if ((rc)); then
         log "FAILED (exit $rc). Phase: $PHASE. Cutover state: $CUTOVER. Evidence: $RUN"
         if [[ ${TARGET_PDB_STATE:-UNKNOWN} == ABSENT ]]; then
@@ -187,9 +209,10 @@ finish() {
 # (notably SP2 errors) are checked as well as the process exit status.
 sql() {
     local db=$1 out=$2 host=${3:-} force_remote=${4:-0} rc=0
-    local -a command
+    local -a command ssh_options=()
+    [[ ${MODE:-pdb} != cdb ]] || ssh_options=(-o StrictHostKeyChecking=yes -o UpdateHostKeys=no)
     if [[ -n $host && ( $db != "$TARGET_SID" || $force_remote == 1 ) ]]; then
-        command=(ssh -o BatchMode=yes -o ConnectTimeout=10 "oracle@$host"
+        command=(ssh -o BatchMode=yes -o ConnectTimeout=10 "${ssh_options[@]}" "oracle@$host"
             "set -e; . /home/oracle/$TARGET_CDB.env >/dev/null; set +x; unset TWO_TASK LOCAL SQLPATH; export ORACLE_SID='$db' TZ=Etc/GMT-2 NLS_LANG=AMERICAN_AMERICA.AL32UTF8; exec \"\$ORACLE_HOME/bin/sqlplus\" -L -s /nolog")
     else
         command=(env "ORACLE_SID=$db" "$ORACLE_HOME/bin/sqlplus" -L -s /nolog)
@@ -213,7 +236,13 @@ sql() {
 }
 
 rman() {
-    local sid=$1 mode=$2 script=$3 out=$4 rc=0
+    local sid=$1 mode=$2 script=$3 out=$4 host=${5:-} rc=0
+    local -a command=(env "ORACLE_SID=$sid" "$ORACLE_HOME/bin/rman")
+    if [[ -n $host && $sid != "$TARGET_SID" ]]; then
+        [[ ${MODE:-pdb} == cdb && $mode == local && $host =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] && identifier "$sid" 30 || die 'Unsafe remote CDB validation request.'
+        command=(ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o UpdateHostKeys=no -o ConnectTimeout=10 "oracle@$host"
+            "set -e; . /home/oracle/$TARGET_CDB.env >/dev/null; set +x; unset TWO_TASK LOCAL SQLPATH; export ORACLE_SID='$sid' TZ=Etc/GMT-2; exec \"\$ORACLE_HOME/bin/rman\"")
+    fi
     {
         if [[ $mode == duplicate ]]; then
             printf 'connect catalog %s/"%s"@"%s";\n' "$VPC_USER" "$VPC_PASSWORD" "$RA_ALIAS"
@@ -224,7 +253,7 @@ rman() {
         fi
         cat "$script"
         printf '\nexit;\n'
-    } | env "ORACLE_SID=$sid" "$ORACLE_HOME/bin/rman" 2>&1 | redact | tee "$out" >> "$LOG" || rc=$?
+    } | "${command[@]}" 2>&1 | redact | tee "$out" >> "$LOG" || rc=$?
     if ((rc)) || grep -Eq 'RMAN-00569|RMAN-03002|RMAN-03009|ORA-[0-9]+|LRM-[0-9]+' "$out"; then
         cat "$out" >&2; die "RMAN failed in $PHASE (local instance $sid)."
     fi
@@ -1368,6 +1397,8 @@ main() {
     phase preflight "Dry run=$DRY_RUN: $SOURCE_CDB/$SOURCE_PDB -> $TARGET_CDB/$TARGET_PDB. Logs: $RUN"
     log 'Fixed UTC+02:00 timestamps. Local lock only: run exclusively on the designated node.'
 
+    if [[ $MODE == cdb ]]; then cdb_main; return; fi
+
     target_identity "$RUN/identity.before"
     local site matches
     validate_target_identity "$RUN/identity.before"
@@ -1727,5 +1758,11 @@ SQL
         log "STANDBYS=NONE was used. No physical standby configured; evidence=$DG_TOPOLOGY_EVIDENCE. No standby apply or refresh handoff is required."
     fi
 }
+
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=lib/cdb_copy.sh
+if [[ -r $(dirname "${BASH_SOURCE[0]}")/lib/cdb_copy.sh ]]; then
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/cdb_copy.sh"
+fi
 
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; fi
