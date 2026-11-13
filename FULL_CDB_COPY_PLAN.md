@@ -16,6 +16,8 @@ The existing PDB refresh implementation and its plan remain unchanged.
   `<WALLET_ROOT>/tde` directory. This is a TDE directory, not a complete wallet
   root, and must not require a source `tde_seps` directory.
 - The final copied CDB is allowed to use the source CipherTrust credentials.
+- The refreshed target may receive a new DBID. Existing physical standbys would
+  require a separate full rebuild; preserving the old target DBID is not required.
 - Keep catalog-only source access: no connection to the production database.
 - For this branch's current task, write the plan and resolve design questions
   with the user before changing scripts, tests, or operational configuration.
@@ -86,8 +88,7 @@ Fail incompatible settings rather than silently editing the original file.
 
 Preserve target `DB_NAME`, `DB_UNIQUE_NAME`, SIDs, Oracle home, parameter/password
 files, and Clusterware resources. Ordinary RMAN `DUPLICATE` creates a new DBID;
-preserving the old target DBID is not part of this recommended approach and
-requires explicit user agreement.
+the user has accepted this. Preserving the old target DBID is not required.
 
 The source data dictionary replaces the target dictionary: users, grants,
 PDB identity/names, jobs, links, application configuration, and stored service
@@ -233,7 +234,7 @@ standby transport against an incompletely validated database.
 Ask one dependent decision at a time, give a recommendation, and record answers
 here before treating proposals above as accepted.
 
-1. May the refreshed target receive a new DBID? **Recommend yes**, using ordinary
+1. **Resolved:** the refreshed target may receive a new DBID, using ordinary
    independent RMAN duplication; any old target standbys need rebuilding.
 2. Must the first CDB mode support targets that currently have standbys?
    **Recommend initially rejecting them** unless an explicit full rebuild and
@@ -261,9 +262,10 @@ here before treating proposals above as accepted.
     **Recommend one explicit work directory**, without an artificial auxiliary
     database name for direct CDB mode.
 
-Decisions recorded: recreation of redo logs and tempfiles is approved. Source
-credentials on the final copied CDB were already approved in the preceding
-discussion. Other recommendations remain provisional.
+Decisions recorded: a new DBID and recreation of redo logs and tempfiles are
+approved. Source credentials on the final copied CDB were already approved in
+the preceding discussion. Standby support scope and other recommendations
+remain provisional.
 
 ## References
 
