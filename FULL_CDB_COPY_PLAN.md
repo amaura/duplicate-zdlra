@@ -17,6 +17,9 @@ The existing PDB refresh implementation and its plan remain unchanged.
 - Rename the copied application PDB from `--source-pdb` to `--target-pdb` when
   those names differ, preserving the target-facing name and service associations.
   The name mapping must never restrict which CDB datafiles are copied.
+- Keep copied Scheduler and legacy `DBMS_JOB` states unchanged. Job handling
+  belongs to the external application refresh procedure. Temporary restore
+  job suppression is allowed; final startup uses the original target settings.
 - Redo logs and tempfiles may be recreated, as explicitly confirmed by the user.
 - Accept a command-line directory containing the contents of the source
   `<WALLET_ROOT>/tde` directory. This is a TDE directory, not a complete wallet
@@ -204,11 +207,18 @@ under controlled isolation and restriction, then validate encrypted data using
 the source credentials and all required historical keys.
 
 Before normal listener registration or job execution, remove/reconcile copied
-production services, apply the agreed job policy, rename the copied application
+production services, rename the copied application
 PDB to `--target-pdb` when necessary, and reconcile every retained target service
 with the resulting dictionary. Validate the resulting PDB name and target-facing
 service associations before restoring normal access.
 Do not run the old post-plug HSM key-import operation.
+
+Preserve all copied application and Oracle-maintained job definitions/states;
+do not disable Scheduler jobs or mark legacy `DBMS_JOB` jobs broken. Temporary
+job suppression applies only during the controlled restore startup. The final
+restart restores the original target parameter settings, so copied jobs can run
+according to those settings. External application refresh procedures own any
+required job changes; this script does not wait for or manage that work.
 
 Shut down the controlled instance and restart through the retained target
 parameter file and existing Clusterware resources. Validate both RAC instances,
@@ -237,7 +247,8 @@ standby transport against an incompletely validated database.
 4. Add supplied-TDE-directory validation, installation, and permanent lifecycle.
 5. Implement the agreed Data Guard policy, complete RAC shutdown/isolation,
    direct duplication, restricted first open, and final target restart.
-6. Add CDB-specific service/PDB/job reconciliation and recovery instructions.
+6. Add CDB-specific service/PDB reconciliation and recovery instructions,
+   preserving copied job states and documenting the external job handoff.
 7. Extend dry run and the read-only collector with CDB-mode prerequisites and
    clearly label checks that need an actual restore. Neither may install the
    active wallet, stop the database, or run RMAN.
@@ -258,8 +269,9 @@ standby transport against an incompletely validated database.
   stale target external-store credentials, per-node installation, failure after
   partial installation, and no deletion of final target TDE material.
 - Exercise failure boundaries, unchanged old datafiles, controlfile/wallet recovery
-  copies, suppressed source services/jobs, final PDB naming, and restoration of
-  all agreed target service states.
+  copies, source-service isolation, temporary job suppression, unchanged copied
+  Scheduler/legacy job states, final PDB naming, and restoration of all agreed
+  target service states.
 - Run shell syntax checks, ShellCheck, and relevant existing/new offline fixtures.
   For this plan-only task no implementation tests or live Oracle commands run.
 - Require later ExaCC/ZDLRA/RAC/CipherTrust acceptance testing. Offline fixtures
@@ -290,9 +302,9 @@ here before treating proposals above as accepted.
 8. **Resolved:** rename the copied application PDB to `--target-pdb` when it
    differs from `--source-pdb`, preserving target-facing service associations.
    Copy all CDB datafiles regardless of that name mapping.
-9. May copied production jobs be disabled in the copied dictionary until the
-   application refresh procedure completes? **Recommend yes** before removing
-   temporary startup isolation.
+9. **Resolved:** preserve copied Scheduler and legacy `DBMS_JOB` states. Handle
+   jobs externally; do not persistently disable them. Temporary restore startup
+   suppression ends when the original target configuration is used again.
 10. May old target files/controlfiles/wallet remain until manual acceptance?
     **Recommend yes**, with conservative capacity checks and manual cleanup.
 11. Which mode-specific working-directory arguments should remain?
@@ -302,8 +314,9 @@ here before treating proposals above as accepted.
 Decisions recorded: a new DBID, recreation of redo logs/tempfiles, full target
 restore/recovery downtime, a temporary restore PFILE, script-managed TDE backup
 and installation on both RAC nodes, portable auto-login wallet input, application
-PDB renaming to the target name, and a warning-only policy for current standbys
-are approved. Original parameter/password files remain unchanged; final RAC
+PDB renaming to the target name, unchanged copied job states with external job
+handling, and a warning-only policy for current standbys are approved.
+Original parameter/password files remain unchanged; final RAC
 startup uses the original parameter file. Standby recreation is handled by
 another script. Source credentials on the final copied CDB were already approved
 in the preceding discussion.
