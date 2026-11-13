@@ -11,7 +11,7 @@ Usage: dup_db.sh --source-cdb NAME --target-cdb NAME \
                  --source-pdb NAME --target-pdb NAME \
                  --aux-cdb NAME --aux-base PATH [--aux-wallet-root PARENT] \
                  [--zdlra-alias ALIAS] [--aux-sga-mb MIB] [--aux-pga-mb MIB] \
-                 [--redo-reserve-mb MIB] \
+                 [--redo-reserve-mb MIB] [--restore-parallelism N] \
                  [--time "YYYY-MM-DD HH:MM:SS"] [--do-duplicate] [--debug] [--purge-log DAYS]
 
 CDB arguments are DB_NAME. Time is fixed UTC+02:00; no DST conversion.
@@ -22,6 +22,7 @@ The complete target WALLET_ROOT is copied privately for each run, including dry 
 Default copy parent: auxiliary work directory (dry run: --aux-base).
 Auxiliary ASM groups are discovered from target DB_CREATE_FILE_DEST/DB_RECOVERY_FILE_DEST.
 Default auxiliary SGA/PGA/redo reserve: 4.00/1.00/10.00 GiB.
+--restore-parallelism sets the auxiliary SBT channel count (positive integer; default: 1).
 The --*-mb options accept positive integer MiB values; capacity output uses GiB.
 Use --zdlra-alias when the SEPS wallet has multiple credentials.
 The standard /home/oracle/<TARGET_CDB>.env supplies Oracle settings; do not edit it.
@@ -60,7 +61,7 @@ load_environment() {
     # Keep any legacy refresh assignments in the sourced file local to this
     # function. Only CLI arguments/defaults configure the refresh operation.
     local DUP_AUX_CDB DUP_AUX_BASE DUP_AUX_WALLET_ROOT DUP_ZDLRA_ALIAS
-    local DUP_AUX_SGA_MB DUP_AUX_PGA_MB DUP_REDO_RESERVE_MB
+    local DUP_AUX_SGA_MB DUP_AUX_PGA_MB DUP_REDO_RESERVE_MB DUP_RESTORE_PARALLELISM
     # Trusted ExaCC shell configuration, never catalog data. Read unchanged.
     # shellcheck disable=SC1090
     source "$1"
@@ -76,7 +77,7 @@ parse_args() {
     SOURCE_CDB='' TARGET_CDB='' SOURCE_PDB='' TARGET_PDB='' RECOVERY_TIME=''
     DEBUG=0 RETENTION=7 DRY_RUN=1
     DUP_AUX_CDB='' DUP_AUX_BASE='' DUP_AUX_WALLET_ROOT='' DUP_ZDLRA_ALIAS=''
-    DUP_AUX_SGA_MB=4096 DUP_AUX_PGA_MB=1024 DUP_REDO_RESERVE_MB=10240
+    DUP_AUX_SGA_MB=4096 DUP_AUX_PGA_MB=1024 DUP_REDO_RESERVE_MB=10240 DUP_RESTORE_PARALLELISM=1
     local opt val seen=' '
     while (($#)); do
         opt=$1; shift
@@ -87,7 +88,7 @@ parse_args() {
             --debug) DEBUG=1 ;;
             --do-duplicate) DRY_RUN=0 ;;
             --source-cdb|--target-cdb|--source-pdb|--target-pdb|--time|--purge-log|\
-            --aux-cdb|--aux-base|--aux-wallet-root|--zdlra-alias|--aux-sga-mb|--aux-pga-mb|--redo-reserve-mb)
+            --aux-cdb|--aux-base|--aux-wallet-root|--zdlra-alias|--aux-sga-mb|--aux-pga-mb|--redo-reserve-mb|--restore-parallelism)
                 (($#)) && [[ -n $1 && $1 != --* ]] || die "Missing value for $opt"
                 val=$1; shift
                 case $opt in
@@ -104,6 +105,7 @@ parse_args() {
                     --aux-sga-mb) DUP_AUX_SGA_MB=$val ;;
                     --aux-pga-mb) DUP_AUX_PGA_MB=$val ;;
                     --redo-reserve-mb) DUP_REDO_RESERVE_MB=$val ;;
+                    --restore-parallelism) DUP_RESTORE_PARALLELISM=$val ;;
                 esac ;;
             *) die "Unknown argument: $opt (see --help)" ;;
         esac
@@ -122,6 +124,7 @@ parse_args() {
     positive "$DUP_AUX_SGA_MB" || die '--aux-sga-mb requires a positive MiB integer.'
     positive "$DUP_AUX_PGA_MB" || die '--aux-pga-mb requires a positive MiB integer.'
     positive "$DUP_REDO_RESERVE_MB" || die '--redo-reserve-mb requires a positive MiB integer.'
+    positive "$DUP_RESTORE_PARALLELISM" || die '--restore-parallelism requires a positive integer of at most nine digits.'
     if [[ -n $RECOVERY_TIME ]]; then
         [[ $RECOVERY_TIME =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}:[0-9]{2}$ ]] || die 'Quote --time as "YYYY-MM-DD HH:MM:SS".'
         local y m d maxday
@@ -1222,13 +1225,15 @@ EOF
 
 build_duplicate() {
     [[ -s $RUN/tempfiles.normalized.out ]] || die 'Normalized catalog tempfile inventory is missing.'
-    cat <<EOF
-run {
-  allocate auxiliary channel ra1 device type sbt_tape
+    local channel tempfile
+    printf '%s\n' 'run {'
+    for ((channel=1; channel<=DUP_RESTORE_PARALLELISM; channel++)); do
+        cat <<EOF
+  allocate auxiliary channel ra$channel device type sbt_tape
     parms "SBT_LIBRARY=$ORACLE_HOME/lib/libra.so, ENV=(RA_WALLET='location=file:$WALLET credential_alias=$RA_ALIAS')";
-  set newname for database to new;
 EOF
-    local tempfile
+    done
+    printf '%s\n' '  set newname for database to new;'
     while IFS= read -r tempfile || [[ -n $tempfile ]]; do
         [[ $tempfile =~ ^[1-9][0-9]*$ ]] || die 'Invalid normalized catalog tempfile number.'
         printf '  set newname for tempfile %s to new;\n' "$tempfile"
@@ -1509,6 +1514,7 @@ SQL
     mkdir "$AUX/audit" "$AUX/diag"
     build_aux_pfile > "$AUX/init.ora"
     start_auxiliary
+    log "Restore parallelism: $DUP_RESTORE_PARALLELISM auxiliary SBT channel(s)."
     build_duplicate > "$RUN/duplicate.rman"
     rman "$DUP_AUX_CDB" duplicate "$RUN/duplicate.rman" "$RUN/duplicate.out"
     sql "$DUP_AUX_CDB" "$RUN/recovery-point.out" <<SQL

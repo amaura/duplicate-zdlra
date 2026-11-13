@@ -84,6 +84,7 @@ Pass the following refresh parameters when invoking the script (example paths mu
 | `--zdlra-alias ra-host.example:1521/ra_service` | Auto-select the sole SEPS credential | Exact catalog connect string to select when the SEPS wallet contains multiple credentials. |
 | `--aux-sga-mb 4096` | 4.00 GiB | Auxiliary SGA size. |
 | `--aux-pga-mb 1024` | 1.00 GiB | Auxiliary PGA target. |
+| `--restore-parallelism 8` | 1 channel | Number of auxiliary SBT restore channels (`ra1` through `raN`); positive integer of at most nine digits. |
 | `--redo-reserve-mb 10240` | 10.00 GiB | Additional auxiliary redo space reserve. |
 
 Paths must be absolute and contain only letters, digits, underscores, dots, slashes and hyphens, without parent traversal. Aliases accept the same characters plus colons. Capacity output uses GiB (1 GiB = 1024 MiB), rounded to two decimal places. The `--*-mb` options still accept MiB; calculations and Oracle settings retain MiB precision. Capacity values must be positive integers of at most nine digits. Legacy `DUP_*` settings in the calling environment or target `.env` do not supply or override these arguments/defaults.
@@ -99,8 +100,10 @@ ZDLRA access follows [notes_zdlra.md](notes_zdlra.md):
 - SEPS auto-login wallet: `/var/opt/oracle/dbaas_acfs/<TARGET_DB_NAME>/wallet_root/server_seps`.
 - The chosen wallet entry must identify the correct ZDLRA catalog and shared VPC user. If several entries exist, select the exact alias with `--zdlra-alias`.
 - `mkstore -listCredential` and `-viewEntry` must work unattended. The password entry index is discovered; it is not assumed to be `2`.
-- `$ORACLE_HOME/lib/libra.so` must be installed and usable. The script allocates an auxiliary SBT channel using `RA_WALLET`; it does not change persistent RMAN configuration.
+- `$ORACLE_HOME/lib/libra.so` must be installed and usable. The script allocates `--restore-parallelism` auxiliary SBT channels using the same `RA_WALLET` and SBT library settings; it does not change persistent RMAN configuration.
 - VPC privileges must expose the source's catalog views and all required backup pieces/redo. The preliminary inventory checks are followed by real auxiliary recovery, which proves the required backup/redo chain before the old PDB is touched.
+
+For example, add `--restore-parallelism 8` to the invocation to allocate eight restore channels. The selected count is logged before duplication. Actual restore concurrency and throughput depend on backup layout and available ZDLRA, network and storage capacity.
 
 ## TDE and service scope
 

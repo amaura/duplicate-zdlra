@@ -17,6 +17,7 @@ names=(--source-cdb PROD --target-cdb PRE --source-pdb APP --target-pdb APPTEST)
 aux=(--aux-cdb duptest --aux-base /stage --aux-wallet-root /wallet)
 base=("${names[@]}" "${aux[@]}")
 parse_args "${base[@]}"
+[[ $DUP_RESTORE_PARALLELISM == 1 ]]; ok
 [[ $RETENTION == 7 && -z $RECOVERY_TIME && $DEBUG == 0 && $DRY_RUN == 1 ]]; ok
 [[ $DUP_AUX_CDB == DUPTEST && $DUP_AUX_BASE == /stage && $DUP_AUX_WALLET_ROOT == /wallet && -z $DUP_ZDLRA_ALIAS ]]; ok
 [[ $DUP_AUX_SGA_MB == 4096 && $DUP_AUX_PGA_MB == 1024 && $DUP_REDO_RESERVE_MB == 10240 ]]; ok
@@ -40,14 +41,14 @@ for value in relative/path '/stage/../other' '/stage/..' '/stage with spaces' "/
     reject parse_args "${names[@]}" --aux-cdb DUPTEST --aux-base "$value" --aux-wallet-root /wallet
     reject parse_args "${names[@]}" --aux-cdb DUPTEST --aux-base /stage --aux-wallet-root "$value"
 done
-for opt in --aux-cdb --aux-base --aux-wallet-root --zdlra-alias --aux-sga-mb --aux-pga-mb --redo-reserve-mb; do
+for opt in --aux-cdb --aux-base --aux-wallet-root --zdlra-alias --aux-sga-mb --aux-pga-mb --redo-reserve-mb --restore-parallelism; do
     reject parse_args "${names[@]}" "$opt"
 done
 reject parse_args "${base[@]}" --aux-cdb OTHER
 reject parse_args "${base[@]}" --aux-base /other
 reject parse_args "${base[@]}" --aux-wallet-root /other
 reject parse_args "${base[@]}" --zdlra-alias first --zdlra-alias second
-for opt in --aux-sga-mb --aux-pga-mb --redo-reserve-mb; do
+for opt in --aux-sga-mb --aux-pga-mb --redo-reserve-mb --restore-parallelism; do
     for value in 0 -1 1.5 01 '1;id' 1000000000; do
         reject parse_args "${base[@]}" "$opt" "$value"
     done
@@ -108,7 +109,8 @@ for format in incident unpadded spaces tabs crlf blanks eof mixed; do
     if grep -qi 'until\|from active\|nofilenamecheck\|connect target\|configure ' "$tmp/latest.rman"; then exit 1; fi
     grep 'set newname for tempfile' "$tmp/latest.rman" > "$tmp/actual-newnames"
     cmp "$tmp/expected-newnames" "$tmp/actual-newnames"
-    grep -q 'allocate auxiliary channel' "$tmp/latest.rman"
+    [[ $(grep -c 'allocate auxiliary channel' "$tmp/latest.rman") == 1 ]]
+    grep -q 'allocate auxiliary channel ra1 device type sbt_tape' "$tmp/latest.rman"
     grep -q 'dbid 1234567890' "$tmp/latest.rman"; ok
     RECOVERY_TIME='2024-10-01 10:20:05'
     build_duplicate > "$tmp/timed.rman"
@@ -116,6 +118,27 @@ for format in incident unpadded spaces tabs crlf blanks eof mixed; do
     cmp "$tmp/expected-newnames" "$tmp/actual-newnames"
     grep -Fq "until time \"to_date('2024-10-01 10:20:05','YYYY-MM-DD HH24:MI:SS')\"" "$tmp/timed.rman"; ok
 done
+# Multiple channels use identical SBT credentials in both recovery-time modes.
+parse_args "${base[@]}" --restore-parallelism 4
+[[ $DUP_RESTORE_PARALLELISM == 4 ]]; ok
+for recovery_time in '' '2024-10-01 10:20:05'; do
+    RECOVERY_TIME=$recovery_time
+    build_duplicate > "$tmp/parallel.rman"
+    [[ $(grep -c 'allocate auxiliary channel' "$tmp/parallel.rman") == 4 ]]
+    for channel in 1 2 3 4; do
+        grep -Fxq "  allocate auxiliary channel ra$channel device type sbt_tape" "$tmp/parallel.rman"
+    done
+    [[ $(grep -Fc "SBT_LIBRARY=$ORACLE_HOME/lib/libra.so, ENV=(RA_WALLET='location=file:$WALLET credential_alias=$RA_ALIAS')" "$tmp/parallel.rman") == 4 ]]
+    if grep -qi 'configure ' "$tmp/parallel.rman"; then exit 1; fi
+    grep 'set newname for tempfile' "$tmp/parallel.rman" > "$tmp/actual-newnames"
+    cmp "$tmp/expected-newnames" "$tmp/actual-newnames"
+    if [[ -n $recovery_time ]]; then
+        grep -Fq "until time" "$tmp/parallel.rman"
+    elif grep -qi 'until' "$tmp/parallel.rman"; then exit 1; fi
+    ok
+done
+parse_args "${base[@]}"
+[[ $DUP_RESTORE_PARALLELISM == 1 ]]; ok
 # Reject malformed complete inventories, never publish a valid prefix, and
 # invalidate an earlier normalized result if a subsequent query is unusable.
 for value in '' $' \t\r\n\t ' 0 00 -1 +1 1.0 '1 2' $'1\t2' '1|2' '1 2 3' abc 'FILE#' '----------' \
@@ -227,7 +250,7 @@ load_environment "$tmp/target.env"
 # A legacy refresh block in the standard environment must not replace CLI settings.
 (
     parse_args "${base[@]}" --zdlra-alias cli.example:1521/service \
-        --aux-sga-mb 8192 --aux-pga-mb 2048 --redo-reserve-mb 20480
+        --aux-sga-mb 8192 --aux-pga-mb 2048 --redo-reserve-mb 20480 --restore-parallelism 4
     cat > "$tmp/legacy.env" <<'EOF'
 ORACLE_HOME=/legacy/oracle
 ORACLE_SID=PRE1
@@ -239,8 +262,10 @@ export DUP_ZDLRA_ALIAS=legacy_alias
 export DUP_AUX_SGA_MB=1
 export DUP_AUX_PGA_MB=2
 export DUP_REDO_RESERVE_MB=3
+export DUP_RESTORE_PARALLELISM=9
 EOF
     load_environment "$tmp/legacy.env"
+    [[ $DUP_RESTORE_PARALLELISM == 4 ]]
     [[ $ORACLE_HOME == /legacy/oracle && $ORACLE_SID == PRE1 && $DB_UNIQUE_NAME == PREM1 ]]
     [[ $DUP_AUX_CDB == DUPTEST && $DUP_AUX_BASE == /stage && $DUP_AUX_WALLET_ROOT == /wallet ]]
     [[ $DUP_ZDLRA_ALIAS == cli.example:1521/service && $DUP_AUX_SGA_MB == 8192 && $DUP_AUX_PGA_MB == 2048 && $DUP_REDO_RESERVE_MB == 20480 ]]
