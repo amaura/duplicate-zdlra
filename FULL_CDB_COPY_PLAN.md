@@ -14,6 +14,9 @@ The existing PDB refresh implementation and its plan remain unchanged.
   parameter file for the final RAC restart.
 - Duplicate the source controlfile and all source CDB datafiles, including root,
   seed, and application PDB datafiles, from ZDLRA backups.
+- Rename the copied application PDB from `--source-pdb` to `--target-pdb` when
+  those names differ, preserving the target-facing name and service associations.
+  The name mapping must never restrict which CDB datafiles are copied.
 - Redo logs and tempfiles may be recreated, as explicitly confirmed by the user.
 - Accept a command-line directory containing the contents of the source
   `<WALLET_ROOT>/tde` directory. This is a TDE directory, not a complete wallet
@@ -74,9 +77,10 @@ Recommended first implementation duplicates directly into the stopped target
 SID, with datafiles in fresh target-owned OMF locations. It therefore does not
 need a separately named auxiliary CDB. Settle the naming of its filesystem work
 directory and rejection of irrelevant `--aux-*` options during the interview.
-Also settle whether the existing source/target PDB arguments remain required
-solely to identify and rename the single application PDB; they must never limit
-the set of datafiles copied in CDB mode.
+Retain the existing source/target PDB arguments to identify and rename the single
+application PDB as approved by the user. They must never limit the set of
+datafiles copied in CDB mode. Skip the rename when the names already match;
+reject a missing source PDB or a conflicting destination name.
 
 ## Recommended architecture — subject to the interview
 
@@ -200,8 +204,10 @@ under controlled isolation and restriction, then validate encrypted data using
 the source credentials and all required historical keys.
 
 Before normal listener registration or job execution, remove/reconcile copied
-production services, apply the agreed job policy, settle the application PDB
-name, and reconcile every retained target service with the resulting dictionary.
+production services, apply the agreed job policy, rename the copied application
+PDB to `--target-pdb` when necessary, and reconcile every retained target service
+with the resulting dictionary. Validate the resulting PDB name and target-facing
+service associations before restoring normal access.
 Do not run the old post-plug HSM key-import operation.
 
 Shut down the controlled instance and restart through the retained target
@@ -281,9 +287,9 @@ here before treating proposals above as accepted.
    Password-only wallet input is unsupported.
 7. **Resolved:** the user approved recreation of redo logs and tempfiles.
    Recovery still consumes the backed-up archived redo required by RMAN.
-8. Should the copied PDB be renamed to the existing/requested target PDB name?
-   **Recommend yes** to preserve target-facing service associations; do not
-   exclude any CDB datafiles based on that name mapping.
+8. **Resolved:** rename the copied application PDB to `--target-pdb` when it
+   differs from `--source-pdb`, preserving target-facing service associations.
+   Copy all CDB datafiles regardless of that name mapping.
 9. May copied production jobs be disabled in the copied dictionary until the
    application refresh procedure completes? **Recommend yes** before removing
    temporary startup isolation.
@@ -295,10 +301,10 @@ here before treating proposals above as accepted.
 
 Decisions recorded: a new DBID, recreation of redo logs/tempfiles, full target
 restore/recovery downtime, a temporary restore PFILE, script-managed TDE backup
-and installation on both RAC nodes, portable auto-login wallet input, and a
-warning-only policy for current standbys are approved. Original parameter/password
-files remain unchanged; final
-RAC startup uses the original parameter file. Standby recreation is handled by
+and installation on both RAC nodes, portable auto-login wallet input, application
+PDB renaming to the target name, and a warning-only policy for current standbys
+are approved. Original parameter/password files remain unchanged; final RAC
+startup uses the original parameter file. Standby recreation is handled by
 another script. Source credentials on the final copied CDB were already approved
 in the preceding discussion.
 Other recommendations remain provisional.
