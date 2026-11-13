@@ -19,6 +19,9 @@ The existing PDB refresh implementation and its plan remain unchanged.
   `<WALLET_ROOT>/tde` directory. This is a TDE directory, not a complete wallet
   root, and must not require a source `tde_seps` directory.
 - The final copied CDB is allowed to use the source CipherTrust credentials.
+- After stopping the target, the script will back up its existing TDE files and
+  install the supplied source TDE contents at the existing `WALLET_ROOT/tde`
+  location on both RAC nodes. Preserve all other wallet-root directories.
 - The refreshed target may receive a new DBID. Existing physical standbys would
   require a separate full rebuild; preserving the old target DBID is not required.
 - Existing target standbys must not block CDB mode. Warn that they must be
@@ -132,10 +135,11 @@ keep the supplied directory unchanged. Reject unsupported links, special files,
 unreadable entries, unsafe paths, and incomplete or changing copies. Verify copied
 bytes without exposing wallet contents.
 
-Keep the target's original `WALLET_ROOT` value. After the target is fully stopped,
-preserve its old TDE directory in a private recovery location and install the
-supplied contents at the active `<target WALLET_ROOT>/tde` path on every required
-RAC node, accounting for shared versus node-local storage.
+Keep the target's original `WALLET_ROOT` value. The user approved script-managed
+installation: after the target is fully stopped, preserve its old TDE directory
+in a private recovery location and install the supplied contents at the active
+`<target WALLET_ROOT>/tde` path on both RAC nodes, accounting for shared versus
+node-local storage.
 
 Preserve `server_seps`, TLS, and other unrelated target wallet-root directories.
 Do not use a retained target `tde_seps` entry as if it were a source credential.
@@ -261,8 +265,9 @@ here before treating proposals above as accepted.
 4. **Resolved:** a temporary restore PFILE derived from the target configuration
    is allowed. Preserve the original parameter/password files unchanged and use
    the original parameter file for the final RAC restart.
-5. May the supplied source TDE directory replace the target's active TDE contents
-   on all nodes, with the old contents privately retained? **Recommend yes**.
+5. **Resolved:** the script backs up the old TDE files after target shutdown and
+   installs the supplied source TDE contents at the existing `WALLET_ROOT/tde`
+   location on both RAC nodes. Preserve other wallet-root directories.
 6. Does the supplied directory contain portable auto-login source HSM credentials,
    or only a password-protected wallet? **Recommend portable auto-login input**;
    settle any required secure password handling before implementation.
@@ -281,11 +286,12 @@ here before treating proposals above as accepted.
     database name for direct CDB mode.
 
 Decisions recorded: a new DBID, recreation of redo logs/tempfiles, full target
-restore/recovery downtime, a temporary restore PFILE, and a warning-only policy
-for current standbys are approved. Original parameter/password files remain
-unchanged; final RAC startup uses the original parameter file. Standby recreation
-is handled by another script. Source credentials on the final copied CDB were
-already approved in the preceding discussion.
+restore/recovery downtime, a temporary restore PFILE, script-managed TDE backup
+and installation on both RAC nodes, and a warning-only policy for current
+standbys are approved. Original parameter/password files remain unchanged; final
+RAC startup uses the original parameter file. Standby recreation is handled by
+another script. Source credentials on the final copied CDB were already approved
+in the preceding discussion.
 Other recommendations remain provisional.
 
 ## References
