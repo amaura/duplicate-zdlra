@@ -82,6 +82,37 @@ setup() {
     TOPOLOGY_CASE=$1 RUN=$tmp/$1 PHASE=offline CUTOVER=untouched LOCK='' DG_HANDOFF=not-checked DG_TOPOLOGY=UNKNOWN DG_APPLY_ATTEMPTED=0
     mkdir -p "$RUN"; LOG=$RUN/run.log; : > "$LOG"; : > "$TOPOLOGY_CALLS"
 }
+# Accept both observed primary-root encodings, retaining strict remote checks.
+setup primary-parent
+for parent in '<NULL>' NONE; do
+    topology_fixture PRE1 FALSE > "$RUN/input"
+    sed "s/MEMBER|PREM1|PRIMARY DATABASE|<NULL>/MEMBER|PREM1|PRIMARY DATABASE|$parent/" "$RUN/input" > "$RUN/metadata"
+    parse_topology_node "$RUN/metadata" PRE1 FALSE
+    ok
+done
+for parent in PREM1 HIDDEN; do
+    sed "s/MEMBER|PREM1|PRIMARY DATABASE|<NULL>/MEMBER|PREM1|PRIMARY DATABASE|$parent/" "$RUN/input" > "$RUN/metadata"
+    reject parse_topology_node "$RUN/metadata" PRE1 FALSE
+done
+sed '/^MEMBER|/d' "$RUN/input" > "$RUN/metadata"
+parse_topology_node "$RUN/metadata" PRE1 FALSE; ok
+# Empty membership must never make a configured remote endpoint acceptable.
+topology_fixture PRE1 FALSE PREST > "$RUN/remote-input"
+sed '/^MEMBER|/d' "$RUN/remote-input" > "$RUN/metadata"
+reject parse_topology_node "$RUN/metadata" PRE1 FALSE
+# A partial inventory lacking the primary remains contradictory.
+sed '/^MEMBER|PREM1|/d' "$RUN/remote-input" > "$RUN/metadata"
+reject parse_topology_node "$RUN/metadata" PRE1 FALSE
+# Literal NONE is accepted only on unused local destinations.
+sed 's/INACTIVE|PRIMARY|<NULL>|<NULL>|UNKNOWN/INACTIVE|PRIMARY|<NULL>|NONE|LOCAL/g' "$RUN/input" | sed '/^MEMBER|/d' > "$RUN/metadata"
+parse_topology_node "$RUN/metadata" PRE1 FALSE; ok
+sed 's/DEST|2|INACTIVE|PRIMARY|<NULL>|NONE|LOCAL/DEST|2|INACTIVE|STANDBY|<NULL>|NONE|LOCAL/' "$RUN/metadata" > "$RUN/remote-none"
+reject parse_topology_node "$RUN/remote-none" PRE1 FALSE
+sed 's/DEST|2|INACTIVE|PRIMARY|<NULL>|NONE|LOCAL/DEST|2|ERROR|PRIMARY|<NULL>|NONE|LOCAL/' "$RUN/metadata" > "$RUN/error-none"
+reject parse_topology_node "$RUN/error-none" PRE1 FALSE
+topology_fixture PRE1 FALSE PREST > "$RUN/input"
+sed 's/MEMBER|PREST|PHYSICAL STANDBY|PREM1/MEMBER|PREST|PHYSICAL STANDBY|NONE/' "$RUN/input" > "$RUN/metadata"
+reject parse_topology_node "$RUN/metadata" PRE1 FALSE
 setup standalone
 # A missing client does not block positively corroborated FALSE-broker topology.
 mv "$ORACLE_HOME/bin/dgmgrl" "$tmp/dgmgrl"

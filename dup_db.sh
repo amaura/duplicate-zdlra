@@ -671,20 +671,30 @@ parse_topology_node() {
       $1=="DEST" && NF==7 && $2 ~ /^([1-9]|[12][0-9]|3[01])$/ {
         if ($2 in dtype) fail("duplicate destination")
         if ($3 !~ /^(VALID|INACTIVE|DEFERRED|ERROR|DISABLED|BAD PARAM|ALTERNATE|FULL)$/) fail("unknown destination status")
-        dtype[$2]=$7; dtarget[$2]=$4; dname[$2]=toupper($6); dvalue[$2]=$5; destinations++; next
+        dstatus[$2]=$3; dtype[$2]=$7; dtarget[$2]=$4; dname[$2]=toupper($6); dvalue[$2]=$5; destinations++; next
       }
       $1=="MEMBER" && NF==4 && ident(toupper($2)) {
         key=toupper($2)
         if (key in roles) fail("duplicate Data Guard member")
         if ($3 !~ /^(PRIMARY DATABASE|PHYSICAL STANDBY|BACKUP APPLIANCE|FAR SYNC STANDBY|LOGICAL STANDBY|SNAPSHOT STANDBY|UNKNOWN)$/) fail("unknown member role")
-        roles[key]=$3; parents[key]=toupper($4); next
+        members++; roles[key]=$3; parents[key]=toupper($4)
+        # Some 19c installations report the primary root as literal NONE.
+        # Normalize only the verified primary; remote parents must still resolve.
+        if (key==toupper(unq) && roles[key]=="PRIMARY DATABASE" && parents[key]=="NONE") parents[key]="<NULL>"
+        next
       }
       $0=="END|TOPOLOGY" {ending++; next}
       {fail("malformed topology observation")}
       END {
         if (identity!=1 || container!=1 || ending!=1 || count!=69 || destinations!=31 || presence_count!=3 || fal_count!=1) fail("incomplete per-instance topology inventory")
         if (toupper(params["dg_broker_start"])!=broker) fail("per-instance broker value changed")
-        if (!(toupper(unq) in roles) || roles[toupper(unq)]!="PRIMARY DATABASE" || parents[toupper(unq)]!="<NULL>") fail("missing or contradictory primary membership")
+        # An unconfigured standalone database can return zero DG_CONFIG rows.
+        # Seed only its independently checked identity. Remote references below
+        # still require real membership evidence; partial inventories stay fatal.
+        if (!members && identity==1) {
+          roles[toupper(unq)]="PRIMARY DATABASE"; parents[toupper(unq)]="<NULL>"
+        }
+        if (!(toupper(unq) in roles) || roles[toupper(unq)]!="PRIMARY DATABASE" || parents[toupper(unq)]!="<NULL>") fail("missing or contradictory primary membership: " unq " role=" ((toupper(unq) in roles) ? roles[toupper(unq)] : "<MISSING>") " parent=" ((toupper(unq) in parents) ? parents[toupper(unq)] : "<MISSING>"))
         for (name in roles) if (name!=toupper(unq)) {
           if (roles[name]=="PRIMARY DATABASE" || roles[name]=="UNKNOWN") fail("unresolved/contradictory remote member")
           ref(name,"Data Guard membership")
@@ -698,6 +708,10 @@ parse_topology_node() {
         }
         for (id=1;id<=31;id++) {
           type=dtype[id]; name=dname[id]
+          # Oracle uses literal NONE for an unused local destination DB name.
+          # Do not discard it on configured, remote or otherwise ambiguous rows.
+          if (name=="NONE" && dstatus[id]=="INACTIVE" && dvalue[id]=="<NULL>" &&
+              dtarget[id]=="PRIMARY" && type=="LOCAL") name="<NULL>"
           remote=(dtarget[id]=="STANDBY" || dtarget[id]=="REMOTE")
           if (dtarget[id] !~ /^(PRIMARY|STANDBY|LOCAL|REMOTE|<NULL>)$/) fail("unknown destination target")
           if (type ~ /^(PHYSICAL|LOGICAL|SNAPSHOT|FAR SYNC|DOWNSTREAM)$/) {
