@@ -21,7 +21,8 @@ The complete target WALLET_ROOT is copied privately for each run, including dry 
 --aux-wallet-root optionally selects an existing parent for that fresh copy.
 Default copy parent: auxiliary work directory (dry run: --aux-base).
 Auxiliary ASM groups are discovered from target DB_CREATE_FILE_DEST/DB_RECOVERY_FILE_DEST.
-Default auxiliary SGA/PGA/redo reserve: 4096/1024/10240 MiB.
+Default auxiliary SGA/PGA/redo reserve: 4.00/1.00/10.00 GiB.
+The --*-mb options accept positive integer MiB values; capacity output uses GiB.
 Use --zdlra-alias when the SEPS wallet has multiple credentials.
 The standard /home/oracle/<TARGET_CDB>.env supplies Oracle settings; do not edit it.
 An existing target CDB is required; the requested target PDB may be absent.
@@ -45,6 +46,13 @@ die() {
 }
 identifier() { [[ $1 =~ ^[A-Za-z][A-Za-z0-9_]*$ && ${#1} -le $2 ]]; }
 positive() { [[ $1 =~ ^[1-9][0-9]*$ && ${#1} -le 9 ]]; }
+# Display only: capacity comparisons and Oracle settings remain in MiB.
+format_gib() {
+    LC_ALL=C awk -v mib="$1" 'BEGIN {
+        if (mib ~ /^[0-9]+$/) printf "%.2f GiB", mib / 1024
+        else printf "unknown"
+    }'
+}
 safe_path() { [[ $1 =~ ^/[A-Za-z0-9_./-]+$ && $1 != *'/../'* && $1 != */.. ]]; }
 
 load_environment() {
@@ -1087,8 +1095,8 @@ SQL
         [[ -d $dest && -w $dest ]] || die "Storage directory is not writable: $dest"
         available=$(df -Pm "$dest" | awk 'NR==2 {print $4}')
     fi
-    positive "$available" && ((available >= need_mb)) || die "Insufficient/unknown usable space in $dest: need ${need_mb} MiB, available ${available:-unknown}."
-    log "Space $dest: $available MiB usable; estimated requirement $need_mb MiB."
+    positive "$available" && ((available >= need_mb)) || die "Insufficient/unknown usable space in $dest: need $(format_gib "$need_mb"), available $(format_gib "${available:-unknown}")."
+    log "Space $dest: $(format_gib "$available") usable; estimated requirement $(format_gib "$need_mb")."
 }
 
 discover_credentials() {

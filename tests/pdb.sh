@@ -249,8 +249,8 @@ for scenario in absent absent-enabled-stopped absent-disabled-stopped absent-man
         grep 'set newname for tempfile' "$fixture_run/duplicate.rman" > "$tmp/actual-newnames"
         cmp "$tmp/expected-newnames" "$tmp/actual-newnames"
         grep -Fq "until time \"to_date('2024-10-01 10:20:05','YYYY-MM-DD HH24:MI:SS')\"" "$fixture_run/duplicate.rman"
-        grep -Fq 'Space +DATA: 999999 MiB usable; estimated requirement 12824 MiB.' "$fixture_run/run.log"
-        grep -Fq 'Space +RECO: 999999 MiB usable; estimated requirement 10240 MiB.' "$fixture_run/run.log"
+        grep -Fq 'Space +DATA: 976.56 GiB usable; estimated requirement 12.52 GiB.' "$fixture_run/run.log"
+        grep -Fq 'Space +RECO: 976.56 GiB usable; estimated requirement 10.00 GiB.' "$fixture_run/run.log"
         aux_path=$(cat "$fixture_run/auxiliary-path")
         wallet_path=$(cat "$fixture_run/auxiliary-wallet-path")
         [[ $wallet_path == "$aux_path/aux_wallet_RFRAUX_"*/wallet_root && ! -e $wallet_path ]]

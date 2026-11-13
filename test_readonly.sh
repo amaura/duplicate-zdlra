@@ -243,11 +243,16 @@ diag_auxiliary() {
     AUX='' AUX_WALLET_DIR='' AUX_WALLET_ROOT='' AUX_WALLET_STATUS=not-created AUXILIARY_STATE=not-started
     trap diag_wallet_finish EXIT
     read_target_settings "$1"
-    printf 'Requested auxiliary SGA/PGA: %s/%s MiB; redo reserve: %s MiB\n' "$DUP_AUX_SGA_MB" "$DUP_AUX_PGA_MB" "$DUP_REDO_RESERVE_MB"
+    printf 'Requested auxiliary SGA/PGA: %s/%s; redo reserve: %s\n' "$(format_gib "$DUP_AUX_SGA_MB")" "$(format_gib "$DUP_AUX_PGA_MB")" "$(format_gib "$DUP_REDO_RESERVE_MB")"
     create_aux_wallet
     cleanup_aux_wallet
     trap - EXIT
-    df -Pm "$DUP_AUX_BASE"
+    df -Pm "$DUP_AUX_BASE" | LC_ALL=C awk '
+        NR==1 {print "Filesystem Size(GiB) Used(GiB) Available(GiB) Use% Mounted on"; next}
+        {printf "%s %.2f %.2f %.2f %s %s\n", $1, $2/1024, $3/1024, $4/1024, $5, $6}
+    '
+    local df_status=("${PIPESTATUS[@]}")
+    ((df_status[0] == 0 && df_status[1] == 0)) || failed=1
     ps -eo args= | awk -v sid="$DUP_AUX_CDB" 'toupper($1)=="ORA_PMON_"sid {print $1}' > "$RUN/aux-pmon.txt"
     if [[ -s $RUN/aux-pmon.txt ]]; then printf 'Auxiliary SID already has a local PMON.\n'; failed=1; fi
     srv "$RUN/cluster-databases.txt" config database
@@ -293,7 +298,7 @@ diag_refresh_space() {
     local -a settings
     mapfile -t settings < "$1"
     ((${#settings[@]} == 5)) || die 'Incomplete verified target storage settings.'
-    printf 'Estimated per-copy data/temp capacity including headroom: %s MiB; auxiliary redo reserve: %s MiB.\n' "$2" "$DUP_REDO_RESERVE_MB"
+    printf 'Estimated per-copy data/temp capacity including headroom: %s; auxiliary redo reserve: %s.\n' "$(format_gib "$2")" "$(format_gib "$DUP_REDO_RESERVE_MB")"
     discover_aux_storage "${settings[0]}" "${settings[4]}"
     check_refresh_space "$2"
 }

@@ -47,7 +47,7 @@ Do not build a framework, a generic topology manager, an automatic rollback syst
   [--purge-log <DAYS>]
 ```
 
-The four source/target arguments, `--aux-cdb` and `--aux-base` are mandatory in both dry-run and duplication modes. `--aux-wallet-root` optionally supplies an existing parent for a new per-run wallet copy, never a wallet to reuse. It defaults to the run's auxiliary working directory, or `--aux-base` in dry-run/diagnostic modes. Auxiliary SGA/PGA/redo reserve defaults are 4096/1024/10240 MiB; the sole SEPS credential is selected automatically unless `--zdlra-alias` is supplied. Dry run is the default; `--do-duplicate` enables actual duplication and replacement or initial creation. `--purge-log` defaults to seven days. `--time` must be quoted as shown.
+The four source/target arguments, `--aux-cdb` and `--aux-base` are mandatory in both dry-run and duplication modes. `--aux-wallet-root` optionally supplies an existing parent for a new per-run wallet copy, never a wallet to reuse. It defaults to the run's auxiliary working directory, or `--aux-base` in dry-run/diagnostic modes. Auxiliary SGA/PGA/redo reserve defaults are 4.00/1.00/10.00 GiB (the `--*-mb` options accept MiB; capacity displays use GiB rounded to two decimal places, while calculations retain MiB precision); the sole SEPS credential is selected automatically unless `--zdlra-alias` is supplied. Dry run is the default; `--do-duplicate` enables actual duplication and replacement or initial creation. `--purge-log` defaults to seven days. `--time` must be quoted as shown.
 
 ## Implementation sequence
 

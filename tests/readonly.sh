@@ -299,7 +299,7 @@ grep -q '\[PASS\] target-space' "$tmp/healthy.txt"
 grep -q 'FAIL=0 SKIP=0' "$tmp/healthy.txt"
 grep -q 'NOT RUN.*SBT allocation/media reads' "$tmp/healthy.txt"; ok
 grep -q '\[PASS\] tempfiles' "$tmp/healthy.txt"
-grep -Fq 'Space +DATA: 999999 MiB usable; estimated requirement 2585 MiB.' "$tmp/healthy.txt"
+grep -Fq 'Space +DATA: 976.56 GiB usable; estimated requirement 2.52 GiB.' "$tmp/healthy.txt"
 check_tempfile_evidence "$tmp/healthy.txt"
 grep -q '\[PASS\] auxiliary' "$tmp/healthy.txt"
 grep -q 'Auxiliary wallet copy: ready;' "$tmp/healthy.txt"
@@ -324,7 +324,7 @@ check_tempfile_evidence "$tmp/healthy-time.txt"
 run_fixture temp-size-zero 0
 grep -q '\[PASS\] tempfiles' "$tmp/temp-size-zero.txt"
 grep -q '\[PASS\] target-space' "$tmp/temp-size-zero.txt"
-grep -Fq 'Space +DATA: 999999 MiB usable; estimated requirement 2561 MiB.' "$tmp/temp-size-zero.txt"
+grep -Fq 'Space +DATA: 976.56 GiB usable; estimated requirement 2.50 GiB.' "$tmp/temp-size-zero.txt"
 check_tempfile_evidence "$tmp/temp-size-zero.txt" 0
 run_fixture temp-size-error 1
 grep -q '\[FAIL\] tempfiles' "$tmp/temp-size-error.txt"
@@ -492,8 +492,8 @@ for DIAG_FIXTURE_CASE in asm-custom asm-shared; do
     diag_refresh_space "$RUN/settings.txt" 1000 > "$tmp/space-report"
     if [[ $DIAG_FIXTURE_CASE == asm-custom ]]; then
         grep -Fq 'data=+DBSTORE recovery=+ARCHSTORE' "$tmp/settings-report"
-        grep -Fq 'Space +DBSTORE: 999999 MiB usable; estimated requirement 2100 MiB.' "$tmp/space-report"
-        grep -Fq 'Space +ARCHSTORE: 999999 MiB usable; estimated requirement 100 MiB.' "$tmp/space-report"
+        grep -Fq 'Space +DBSTORE: 976.56 GiB usable; estimated requirement 2.05 GiB.' "$tmp/space-report"
+        grep -Fq 'Space +ARCHSTORE: 976.56 GiB usable; estimated requirement 0.10 GiB.' "$tmp/space-report"
         [[ $(grep -c '^asm-space ' "$DIAG_FIXTURE_CALLS") == 2 ]]
     else
         grep -Fq 'data=+SHARED recovery=+SHARED' "$tmp/settings-report"

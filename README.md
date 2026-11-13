@@ -82,11 +82,11 @@ Pass the following refresh parameters when invoking the script (example paths mu
 | `--aux-base /u02/zdlra_refresh` | Required | Existing small filesystem work directory, writable by `oracle`; local or ACFS. Database files use discovered ASM groups. |
 | `--aux-wallet-root /u02/wallet_copies` | Optional | Existing writable parent for a fresh private copy of target `WALLET_ROOT`. Defaults to the run's auxiliary work directory; dry run/collector default to `--aux-base`. Existing parent contents are preserved. |
 | `--zdlra-alias ra-host.example:1521/ra_service` | Auto-select the sole SEPS credential | Exact catalog connect string to select when the SEPS wallet contains multiple credentials. |
-| `--aux-sga-mb 4096` | 4096 MiB | Auxiliary SGA size. |
-| `--aux-pga-mb 1024` | 1024 MiB | Auxiliary PGA target. |
-| `--redo-reserve-mb 10240` | 10240 MiB | Additional auxiliary redo space reserve. |
+| `--aux-sga-mb 4096` | 4.00 GiB | Auxiliary SGA size. |
+| `--aux-pga-mb 1024` | 1.00 GiB | Auxiliary PGA target. |
+| `--redo-reserve-mb 10240` | 10.00 GiB | Additional auxiliary redo space reserve. |
 
-Paths must be absolute and contain only letters, digits, underscores, dots, slashes and hyphens, without parent traversal. Aliases accept the same characters plus colons. Capacity values must be positive integers of at most nine digits. Legacy `DUP_*` settings in the calling environment or target `.env` do not supply or override these arguments/defaults.
+Paths must be absolute and contain only letters, digits, underscores, dots, slashes and hyphens, without parent traversal. Aliases accept the same characters plus colons. Capacity output uses GiB (1 GiB = 1024 MiB), rounded to two decimal places. The `--*-mb` options still accept MiB; calculations and Oracle settings retain MiB precision. Capacity values must be positive integers of at most nine digits. Legacy `DUP_*` settings in the calling environment or target `.env` do not supply or override these arguments/defaults.
 
 Provision the auxiliary SID exclusively for this operation, outside Clusterware and any listener service. `STARTUP` deliberately omits `FORCE`, so an already running instance is never shut down. RMAN uses local OS authentication; no auxiliary password file or network connection is used. The auxiliary's dynamic registration points at an unused IPC address, remote registration is empty, and jobs/AQ time monitoring are disabled. Its SPFILE is not restored from production. Working files (PFILE, unplug XML, audit and diagnostics) are placed in a fresh directory under `--aux-base`. Auxiliary database files use ASM Oracle Managed Files in a unique per-run `DB_UNIQUE_NAME` namespace; their paths are verified before opening. The auxiliary SID/DB_NAME remains `--aux-cdb`.
 
