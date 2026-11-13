@@ -1,6 +1,7 @@
-# Full CDB copy mode — design and interview draft
+# Full CDB copy mode — implementation plan
 
-Status: plan only; implementation is not authorized yet. Branch:
+Status: interview decisions recorded; plan only, with no implementation changes.
+Branch:
 `codex/full-cdb-copy-mode`, based on `main` at `08d5849`.
 The existing PDB refresh implementation and its plan remain unchanged.
 
@@ -43,6 +44,8 @@ The existing PDB refresh implementation and its plan remain unchanged.
   and tempfiles before restoring the source copy. Do not retain those old
   database files through acceptance. Keep the agreed parameter/password files,
   protected controlfile copies, and old TDE backup.
+- CDB mode uses `--work-dir PATH` and no `--aux-*` arguments. The existing PDB
+  mode retains its auxiliary arguments and behavior.
 - Keep catalog-only source access: no connection to the production database.
 - For this branch's current task, write the plan and resolve design questions
   with the user before changing scripts, tests, or operational configuration.
@@ -67,7 +70,7 @@ The existing PDB refresh implementation and its plan remain unchanged.
   and evidence collection must eventually understand the new mode while keeping
   its existing read-only command guards.
 
-## Proposed CLI — names and mode-specific arguments remain provisional
+## CLI
 
 Use `--mode pdb|cdb`, defaulting to `pdb` for backward compatibility.
 Use `--source-wallet-dir PATH` for a directory whose direct children are the
@@ -77,19 +80,42 @@ Require that directory in CDB mode and reject it in PDB mode rather than ignorin
 it. Never treat its parent as the supplied wallet root.
 
 Retain `--source-cdb`, `--target-cdb`, `--time`, `--zdlra-alias`,
-`--restore-parallelism`, logging options, and the default dry run.
+`--restore-parallelism`, `--redo-reserve-mb`, logging options, and the default dry run.
 Retain `--do-duplicate` as the explicit execution switch.
 
-Recommended first implementation duplicates directly into the stopped target
-SID, with datafiles in fresh target-owned OMF locations. It therefore does not
-need a separately named auxiliary CDB. Settle the naming of its filesystem work
-directory and rejection of irrelevant `--aux-*` options during the interview.
+Duplicate directly into the stopped target SID, with datafiles in newly
+allocated target-owned OMF locations. Require `--work-dir PATH` as the existing
+filesystem parent for private per-run working files. There is no separately
+named auxiliary CDB. Reject all `--aux-*` options in CDB mode, including auxiliary
+memory and wallet-copy options. Derive temporary restore memory settings from
+the target configuration instead. Reject `--work-dir` and `--source-wallet-dir`
+in PDB mode; keep its existing required auxiliary arguments and defaults.
+
 Retain the existing source/target PDB arguments to identify and rename the single
 application PDB as approved by the user. They must never limit the set of
 datafiles copied in CDB mode. Skip the rename when the names already match;
 reject a missing source PDB or a conflicting destination name.
 
-## Recommended architecture — subject to the interview
+Planned CDB-mode dry-run example:
+
+```bash
+./dup_db.sh --mode cdb \
+  --source-cdb PROD --target-cdb PRE \
+  --source-pdb APP --target-pdb APPTEST \
+  --work-dir /u02/zdlra_refresh \
+  --source-wallet-dir /u02/source_tde \
+  --restore-parallelism 8 \
+  --time "2024-10-01 10:20:05"
+```
+
+`/u02/source_tde` contains the source TDE files directly. Add `--do-duplicate`
+only to execute the restore, including deletion of old target datafiles, redo
+logs, and tempfiles. Without it, do not install the active wallet, stop services
+or instances, delete database files, or invoke RMAN. Keep the existing fixed
+UTC+02:00 recovery-time interpretation and omit `--time` for the existing latest
+recoverable-endpoint behavior.
+
+## Planned architecture
 
 ### 1. Preserve target files and establish compatibility
 
@@ -110,6 +136,16 @@ per-instance undo tablespace names, instance numbers, and redo threads. Some
 checks require the restored controlfile or dictionary; execute them at the
 earliest point where authoritative evidence exists, before unrestricted use.
 Fail incompatible settings rather than silently editing the original file.
+
+Establish an expected source datafile manifest for the recovery point and
+verify that the duplicated database covers that complete set. Oracle documents
+that ordinary `DUPLICATE` omits offline-clean/`OFFLINE NORMAL` files and can omit
+some files affected by historical read-only transitions. Detect unsupported
+omissions from authoritative catalog or restored-controlfile metadata at the
+earliest available stage and fail rather than silently delivering a partial
+CDB. Manual attachment of omitted files is outside the initial mode. Checks
+that require a restored controlfile necessarily occur after the agreed old-file
+deletion; report that limitation in the execution plan.
 
 Before shutdown, capture and verify the complete old target datafile, tempfile,
 and redo-member inventories. Freeze these exact paths for the later deletion
@@ -153,12 +189,13 @@ the execution plan and completion/failure output that all target physical
 standbys must be recreated by the separate script after the CDB replacement.
 
 The retained target parameter file can contain Broker and redo-transport
-settings. Temporary primary startup isolation remains part of the proposed
+settings. Temporary primary startup isolation is part of the agreed
 restore procedure; it must not become an additional standby approval gate or
 silently change the retained file. The final startup uses the retained target
-configuration. Do not claim that the existing Data Guard configuration is
-healthy or the old standbys are usable; remediation belongs to the separate
-script.
+configuration, so its Broker/transport settings may reactivate before final RAC
+validation completes. Do not claim that the existing Data Guard configuration
+is healthy or the old standbys are usable; remediation belongs to the separate
+script. Do not add a standby reachability or rebuild prerequisite.
 
 ### 4. Stage and install the supplied source TDE files
 
@@ -192,6 +229,10 @@ the final target wallet and must never enter auxiliary-wallet cleanup.
 
 Capture all target service/resource states, stop target services and both RAC
 instances through Clusterware, and verify they cannot restart during the work.
+Hold target application service resources disabled through restoration and the
+final database restart, recording their original enablement and placement for
+later restoration. Do not let automatic service startup expose an unvalidated
+copy when the database resource starts.
 The user accepts the full restore/recovery outage; direct duplication does not
 need a short cutover or a separately staged database.
 
@@ -203,8 +244,8 @@ RAC instances are stopped and cannot be automatically restarted.
 Delete every old target datafile, tempfile, and redo-log member from the frozen,
 verified inventory before starting the source duplication. Include all old CDB
 containers and all inventoried online and standby redo-log members belonging to
-this target. Use supported ASM/filesystem
-operations against explicit individual paths; do not use directory-wide removal,
+this target. Use supported ASM/filesystem operations against explicit individual
+paths; do not use directory-wide removal,
 wildcards, or `DROP DATABASE`, which could remove retained files. Exclude the
 retained parameter/password files, controlfiles, wallets, archived logs, and
 backup files. Verify deletion results and record each outcome. Do not begin
@@ -220,6 +261,12 @@ from the target configuration, as approved by the user. Temporary overrides incl
 `CLUSTER_DATABASE=FALSE` and isolation of listeners, jobs, Broker, and redo
 transport. The original parameter/password files stay unchanged, and final RAC
 startup uses the original parameter file.
+
+In that temporary PFILE and the RMAN command, establish target-owned OMF naming
+for all new datafiles, online redo, and tempfiles before creation. Remove or
+override conflicting source/old-target filename-conversion settings only in the
+temporary copy. Keep the retained `CONTROL_FILES` locations and original
+permanent parameter file unchanged.
 
 Use catalog-based `DUPLICATE DATABASE ... TO <TARGET_DB_NAME>` with an explicit
 temporary `PFILE` and `NOOPEN`. Do not include `SPFILE`, `PASSWORD FILE`,
@@ -245,13 +292,17 @@ recover the old target database after deletion.
 ### 6. Validate and return to the retained target configuration
 
 Before the first open, verify destination identity, file mappings, recovery
-result, and any compatibility checks possible while mounted. Open `RESETLOGS`
+result, complete expected source datafile coverage, and any compatibility checks
+possible while mounted. Verify planned redo/tempfile destinations at this stage;
+`NOOPEN` can defer tempfile creation until `OPEN RESETLOGS`, so do not require
+every recreated file to exist while mounted. Open `RESETLOGS`
 under controlled isolation and restriction, then validate encrypted data using
-the source credentials and all required historical keys.
+the source credentials and all required historical keys. Verify the actual new
+datafile, redo, and tempfile inventories after opening.
 
 Before normal listener registration or job execution, remove/reconcile copied
-production services, rename the copied application
-PDB to `--target-pdb` when necessary, and reconcile every retained target service
+production services, rename the copied application PDB to `--target-pdb` when
+necessary, and reconcile every retained target service
 with the resulting dictionary. Validate the resulting PDB name and target-facing
 service associations before restoring normal access.
 Do not run the old post-plug HSM key-import operation.
@@ -264,10 +315,13 @@ according to those settings. External application refresh procedures own any
 required job changes; this script does not wait for or manage that work.
 
 Shut down the controlled instance and restart through the retained target
-parameter file and existing Clusterware resources. Validate both RAC instances,
-source-key access, PDB states, services, file inventories, new DBID, and unchanged
-parameter/password files. Restore agreed target service/resource states only
-after those checks succeed. Record any required backup-registration or standby
+parameter file and existing Clusterware resources while application service
+resources remain held disabled. Validate both RAC instances, source-key access,
+PDB states, file inventories, new DBID, service definitions, and unchanged
+parameter/password files. After database-readiness checks succeed, restore the
+captured target service/resource enablement and running placement, then validate
+actual service state and the final configuration. Record any required
+backup-registration or standby
 rebuild handoff; do not claim those separate procedures are complete.
 
 ### 7. Failure handling and recovery evidence
@@ -283,10 +337,13 @@ Retain precise state: stopped/running resources, active wallet, active controlfi
 locations, old/new DBIDs, recovery endpoint, old/new file inventories, per-file
 deletion results, and the last verified phase. Distinguish failures before any
 deletion, during partial deletion, during restore, and after opening the copy.
-Do not resume Clusterware services or
-standby transport against an incompletely validated database.
+Do not resume Clusterware application services or standby transport against an
+incompletely restored database during the controlled restore. Application
+service release requires the final readiness checks described above. Final
+startup with the original parameter file may reactivate its Broker/transport
+settings; existing standby health remains outside this mode.
 
-## Implementation work after the interview
+## Implementation sequence
 
 1. Add mode-aware parsing and validation without changing existing PDB defaults.
 2. Split reusable discovery/catalog/storage helpers from PDB-specific execution.
@@ -307,6 +364,9 @@ standby transport against an incompletely validated database.
 - Verify generated RMAN excludes source SPFILE/password copying and all PDB
   unplug/plug operations; covers every source datafile, redo recovery, new online
   redo/tempfile destinations, requested time, and channel parallelism.
+- Verify expected/restored source datafile coverage, explicit failure for
+  offline-clean or other unsupported omissions, OMF conversion conflicts, and
+  planned pre-open versus actual post-open redo/tempfile inventories.
 - Exercise retained parameter/password files and registrations before/after;
   both-node shutdown/restart; restart prevention; unexpected drift; unsupported
   topology; and mode-specific argument rejection.
@@ -323,16 +383,17 @@ standby transport against an incompletely validated database.
 - Exercise failure boundaries, controlfile/wallet recovery copies,
   source-service isolation, temporary job suppression, unchanged copied
   Scheduler/legacy job states, final PDB naming, and restoration of all agreed
-  target service states.
+  target service states. Verify that automatic services stay disabled through
+  final RAC startup and actual running-state checks occur after restoration.
 - Run shell syntax checks, ShellCheck, and relevant existing/new offline fixtures.
   For this plan-only task no implementation tests or live Oracle commands run.
 - Require later ExaCC/ZDLRA/RAC/CipherTrust acceptance testing. Offline fixtures
   cannot establish real key access, SBT recovery, or successful RAC reopening.
 
-## Interview decision queue
+## Recorded interview decisions
 
-Ask one dependent decision at a time, give a recommendation, and record answers
-here before treating proposals above as accepted.
+All interview decisions below are resolved. Implementation details must follow
+these choices; the current branch change remains plan-only.
 
 1. **Resolved:** the refreshed target may receive a new DBID, using ordinary
    independent RMAN duplication; any old target standbys need rebuilding.
@@ -360,21 +421,19 @@ here before treating proposals above as accepted.
 10. **Resolved:** delete old target datafiles, redo logs, and tempfiles before
     copying the source database. Preserve the original parameter/password files,
     controlfile copies, and agreed old-TDE backup. No retained-datafile rollback.
-11. Which mode-specific working-directory arguments should remain?
-    **Recommend one explicit work directory**, without an artificial auxiliary
-    database name for direct CDB mode.
+11. **Resolved:** CDB mode requires `--work-dir PATH` and omits all `--aux-*`
+    arguments. PDB mode retains its existing auxiliary arguments.
 
 Decisions recorded: a new DBID, recreation of redo logs/tempfiles, full target
 restore/recovery downtime, a temporary restore PFILE, script-managed TDE backup
 and installation on both RAC nodes, portable auto-login wallet input, application
 PDB renaming to the target name, unchanged copied job states with external job
-handling, pre-copy deletion of old target datafiles/redo/tempfiles, and a
-warning-only policy for current standbys are approved.
-Original parameter/password files remain unchanged; final RAC
-startup uses the original parameter file. Standby recreation is handled by
+handling, pre-copy deletion of old target datafiles/redo/tempfiles, `--work-dir`
+for CDB mode without auxiliary arguments, and a warning-only policy for current
+standbys are approved. Original parameter/password files remain unchanged; final
+RAC startup uses the original parameter file. Standby recreation is handled by
 another script. Source credentials on the final copied CDB were already approved
-in the preceding discussion.
-Other recommendations remain provisional.
+in the preceding discussion. No further interview decision is pending.
 
 ## References
 
