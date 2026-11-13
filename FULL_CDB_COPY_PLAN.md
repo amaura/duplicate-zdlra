@@ -18,6 +18,12 @@ The existing PDB refresh implementation and its plan remain unchanged.
 - The final copied CDB is allowed to use the source CipherTrust credentials.
 - The refreshed target may receive a new DBID. Existing physical standbys would
   require a separate full rebuild; preserving the old target DBID is not required.
+- Existing target standbys must not block CDB mode. Warn that they must be
+  recreated; a separate script handles their recreation. Do not manage or
+  require successful access to those standbys in this mode.
+- The target may remain down for the entire restore and recovery. Direct
+  duplication into the stopped target is accepted; staging for a short outage
+  is not required.
 - Keep catalog-only source access: no connection to the production database.
 - For this branch's current task, write the plan and resolve design questions
   with the user before changing scripts, tests, or operational configuration.
@@ -96,20 +102,25 @@ metadata are source contents. Retaining the password file does not retain the
 old database dictionary's users or credentials. Plan application reconciliation
 and PDB naming explicitly rather than promising the old target metadata survives.
 
-### 3. Handle Data Guard as a separate decision
+### 3. Warn about standby recreation and leave it to the separate script
 
 Existing target physical standbys cannot continue unchanged after an independent
 duplicate with a new DBID. They require a separate whole-database rebuild.
 
-Recommended conservative initial scope: support CDB mode only when complete
-topology evidence proves the target has no configured standby. This is a proposal,
-not an agreed restriction. If standby targets are required, design explicit
-Broker, transport, restart, and external rebuild handoffs before implementation.
-Do not reuse the existing PDB apply-stop gate as sufficient protection.
+The user has chosen a warning-only policy for current standbys. CDB mode must
+proceed whether existing standbys are present, unavailable, or awaiting rebuild.
+Do not run the PDB-mode standby discovery/apply-stop prerequisites, connect to
+standby hosts, wait for their state, or recreate them. Emit a clear warning in
+the execution plan and completion/failure output that all target physical
+standbys must be recreated by the separate script after the CDB replacement.
 
-The retained parameter file can contain Broker and redo-transport settings.
-First-open isolation and the final restart must account for those persistent
-settings; never reconnect automatically to an obsolete standby configuration.
+The retained target parameter file can contain Broker and redo-transport
+settings. Temporary primary startup isolation remains part of the proposed
+restore procedure; it must not become an additional standby approval gate or
+silently change the retained file. The final startup uses the retained target
+configuration. Do not claim that the existing Data Guard configuration is
+healthy or the old standbys are usable; remediation belongs to the separate
+script.
 
 ### 4. Stage and install the supplied source TDE files
 
@@ -138,7 +149,8 @@ the final target wallet and must never enter auxiliary-wallet cleanup.
 
 Capture all target service/resource states, stop target services and both RAC
 instances through Clusterware, and verify they cannot restart during the work.
-Require the agreed outage; direct duplication does not provide a short cutover.
+The user accepts the full restore/recovery outage; direct duplication does not
+need a short cutover or a separately staged database.
 
 Start one controlled target instance in `NOMOUNT` using a temporary PFILE derived
 from the target configuration. Proposed temporary overrides include
@@ -218,6 +230,9 @@ standby transport against an incompletely validated database.
 - Exercise retained parameter/password files and registrations before/after;
   both-node shutdown/restart; restart prevention; unexpected drift; unsupported
   topology; and mode-specific argument rejection.
+- Verify that existing, unreachable, or unrebuilt standbys do not block CDB mode;
+  no standby connections or apply commands occur; and the recreation warning
+  appears. Preserve the existing PDB-mode standby policy and tests.
 - Exercise source TDE input copying, unchanged input, incomplete/unsafe files,
   stale target external-store credentials, per-node installation, failure after
   partial installation, and no deletion of final target TDE material.
@@ -236,11 +251,10 @@ here before treating proposals above as accepted.
 
 1. **Resolved:** the refreshed target may receive a new DBID, using ordinary
    independent RMAN duplication; any old target standbys need rebuilding.
-2. Must the first CDB mode support targets that currently have standbys?
-   **Recommend initially rejecting them** unless an explicit full rebuild and
-   Broker/transport isolation procedure is required and designed.
-3. Is a full target outage during duplication acceptable? **Recommend yes** for
-   the first version; avoid staging under another DB_NAME and subsequent rename.
+2. **Resolved:** do not block on current standbys or manage them. Warn that they
+   must be recreated; another script handles recreation.
+3. **Resolved:** full target downtime during restore/recovery is acceptable.
+   Duplicate directly into the stopped target rather than staging another CDB.
 4. Does retention mean unchanged original parameter/password files while allowing
    a temporary derived PFILE? **Recommend yes** for controlled RAC recovery.
 5. May the supplied source TDE directory replace the target's active TDE contents
@@ -262,10 +276,11 @@ here before treating proposals above as accepted.
     **Recommend one explicit work directory**, without an artificial auxiliary
     database name for direct CDB mode.
 
-Decisions recorded: a new DBID and recreation of redo logs and tempfiles are
-approved. Source credentials on the final copied CDB were already approved in
-the preceding discussion. Standby support scope and other recommendations
-remain provisional.
+Decisions recorded: a new DBID, recreation of redo logs/tempfiles, full target
+restore/recovery downtime, and a warning-only policy for current standbys are
+approved. Standby recreation is handled by another script. Source credentials
+on the final copied CDB were already approved in the preceding discussion.
+Other recommendations remain provisional.
 
 ## References
 
