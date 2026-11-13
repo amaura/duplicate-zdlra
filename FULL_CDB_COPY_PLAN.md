@@ -39,6 +39,10 @@ The existing PDB refresh implementation and its plan remain unchanged.
 - The target may remain down for the entire restore and recovery. Direct
   duplication into the stopped target is accepted; staging for a short outage
   is not required.
+- After complete target shutdown, delete the old target datafiles, redo logs,
+  and tempfiles before restoring the source copy. Do not retain those old
+  database files through acceptance. Keep the agreed parameter/password files,
+  protected controlfile copies, and old TDE backup.
 - Keep catalog-only source access: no connection to the production database.
 - For this branch's current task, write the plan and resolve design questions
   with the user before changing scripts, tests, or operational configuration.
@@ -107,6 +111,23 @@ checks require the restored controlfile or dictionary; execute them at the
 earliest point where authoritative evidence exists, before unrestricted use.
 Fail incompatible settings rather than silently editing the original file.
 
+Before shutdown, capture and verify the complete old target datafile, tempfile,
+and redo-member inventories. Freeze these exact paths for the later deletion
+phase, separately from controlfiles, parameter/password files, wallet material,
+archived logs, and backup files. Revalidate target identity and inventory before
+shutdown so stale evidence cannot drive deletion. Associate the manifest with
+the verified old target DBID and storage namespace; normalize/deduplicate paths
+and aliases so the same file is not deleted twice.
+
+CDB-mode capacity estimates must reflect deletion before restoration, rather
+than the PDB-mode peak-coexistence formula. Estimate usable capacity after
+reclaiming only the inventoried files actually stored in each destination ASM
+group, accounting for ASM usable-space/mirroring semantics. Show the estimate
+before deletion and recheck actual usable capacity afterward. Source copy size,
+redo/tempfile recreation, recovery working space, and headroom still apply.
+Fail estimates that cannot be established reliably before destroying old files;
+do not count unrelated files or unverified potential reclaim.
+
 ### 2. Distinguish retained identity from replacement database contents
 
 Preserve target `DB_NAME`, `DB_UNIQUE_NAME`, SIDs, Oracle home, parameter/password
@@ -167,12 +188,32 @@ Provider libraries, network access, domains, certificates, and historical key
 availability remain prerequisites. The installed source TDE material becomes
 the final target wallet and must never enter auxiliary-wallet cleanup.
 
-### 5. Shut down and duplicate into the target
+### 5. Shut down, delete old database files, and duplicate into the target
 
 Capture all target service/resource states, stop target services and both RAC
 instances through Clusterware, and verify they cannot restart during the work.
 The user accepts the full restore/recovery outage; direct duplication does not
 need a short cutover or a separately staged database.
+
+Before any database-file deletion, finish the protected parameter/password,
+controlfile, and old-TDE backups; stage and verify the supplied wallet; and
+complete the available catalog, compatibility, and capacity checks. Verify both
+RAC instances are stopped and cannot be automatically restarted.
+
+Delete every old target datafile, tempfile, and redo-log member from the frozen,
+verified inventory before starting the source duplication. Include all old CDB
+containers and all inventoried online and standby redo-log members belonging to
+this target. Use supported ASM/filesystem
+operations against explicit individual paths; do not use directory-wide removal,
+wildcards, or `DROP DATABASE`, which could remove retained files. Exclude the
+retained parameter/password files, controlfiles, wallets, archived logs, and
+backup files. Verify deletion results and record each outcome. Do not begin
+RMAN duplication if deletion is partial or its result is unknown.
+
+This first successful old-database-file deletion is the destructive boundary;
+record it explicitly. Partial deletion already makes the old database unusable.
+Parameter/password retention and small controlfile/wallet backups do not provide
+a rollback after that boundary.
 
 Start one controlled target instance in `NOMOUNT` using a temporary PFILE derived
 from the target configuration, as approved by the user. Temporary overrides include
@@ -188,16 +229,18 @@ new target identity into a backup service as part of the refresh.
 
 Restore the source controlfile into the target's configured controlfile locations
 only after recoverable copies of old controlfiles exist. Restore all source
-datafiles to fresh target-owned OMF locations; do not overwrite old target
-datafiles or follow source paths. Validate all resulting file mappings.
+datafiles to newly allocated target-owned OMF locations after old target
+datafiles, redo logs, and tempfiles have been deleted. Do not follow source paths
+or require the old file paths to be reused. Validate all resulting file mappings.
 
 Interpret "only source controlfile and datafiles" as excluding the source
 parameter/password files and source online redo files. Redo and tempfile
 recreation is approved. A functioning duplicate still uses archived redo from
 backups as necessary for recovery; it does not copy source online redo files.
 
-Record the exact controlfile-replacement boundary. After that point, restarting
-the old parameter file alone is not a rollback.
+Record controlfile replacement as a later transition, distinct from the earlier
+old-file deletion boundary. Restarting the old parameter file alone cannot
+recover the old target database after deletion.
 
 ### 6. Validate and return to the retained target configuration
 
@@ -229,14 +272,18 @@ rebuild handoff; do not claim those separate procedures are complete.
 
 ### 7. Failure handling and recovery evidence
 
-Preserve old target datafiles, protected old controlfiles, and the old TDE wallet
-through acceptance, subject to the user's retention decision and capacity checks.
-Do not delete old files automatically or attempt an automatic rollback.
+The user requires pre-copy deletion of old target datafiles, redo logs, and
+tempfiles. Retain only the protected configuration/controlfile evidence and old
+TDE backup, plus any newly restored files needed to diagnose a failed copy.
+Do not imply that these small backups preserve the deleted database. Recovery
+of the former target after deletion requires an independent usable database
+backup or other external recovery source; automatic rollback is not provided.
 
 Retain precise state: stopped/running resources, active wallet, active controlfile
-locations, old/new DBIDs, recovery endpoint, old/new file inventories, and the
-last verified phase. Provide manual recovery instructions for failure before
-and after controlfile replacement. Do not resume Clusterware services or
+locations, old/new DBIDs, recovery endpoint, old/new file inventories, per-file
+deletion results, and the last verified phase. Distinguish failures before any
+deletion, during partial deletion, during restore, and after opening the copy.
+Do not resume Clusterware services or
 standby transport against an incompletely validated database.
 
 ## Implementation work after the interview
@@ -246,7 +293,8 @@ standby transport against an incompletely validated database.
 3. Add retained-file snapshots, whole-CDB inventories, and final verification.
 4. Add supplied-TDE-directory validation, installation, and permanent lifecycle.
 5. Implement the agreed Data Guard policy, complete RAC shutdown/isolation,
-   direct duplication, restricted first open, and final target restart.
+   exact old-file deletion, direct duplication, restricted first open, and final
+   target restart.
 6. Add CDB-specific service/PDB reconciliation and recovery instructions,
    preserving copied job states and documenting the external job handoff.
 7. Extend dry run and the read-only collector with CDB-mode prerequisites and
@@ -268,8 +316,12 @@ standby transport against an incompletely validated database.
 - Exercise source TDE input copying, unchanged input, incomplete/unsafe files,
   stale target external-store credentials, per-node installation, failure after
   partial installation, and no deletion of final target TDE material.
-- Exercise failure boundaries, unchanged old datafiles, controlfile/wallet recovery
-  copies, source-service isolation, temporary job suppression, unchanged copied
+- Exercise old-file deletion only after full RAC shutdown and required backups;
+  exact path protection; deletion of all target datafiles/redo/tempfiles before
+  duplication; partial/unknown deletion blocking restore; actual post-delete
+  capacity checks; and no automatic rollback or deletion of new restored files.
+- Exercise failure boundaries, controlfile/wallet recovery copies,
+  source-service isolation, temporary job suppression, unchanged copied
   Scheduler/legacy job states, final PDB naming, and restoration of all agreed
   target service states.
 - Run shell syntax checks, ShellCheck, and relevant existing/new offline fixtures.
@@ -305,8 +357,9 @@ here before treating proposals above as accepted.
 9. **Resolved:** preserve copied Scheduler and legacy `DBMS_JOB` states. Handle
    jobs externally; do not persistently disable them. Temporary restore startup
    suppression ends when the original target configuration is used again.
-10. May old target files/controlfiles/wallet remain until manual acceptance?
-    **Recommend yes**, with conservative capacity checks and manual cleanup.
+10. **Resolved:** delete old target datafiles, redo logs, and tempfiles before
+    copying the source database. Preserve the original parameter/password files,
+    controlfile copies, and agreed old-TDE backup. No retained-datafile rollback.
 11. Which mode-specific working-directory arguments should remain?
     **Recommend one explicit work directory**, without an artificial auxiliary
     database name for direct CDB mode.
@@ -315,7 +368,8 @@ Decisions recorded: a new DBID, recreation of redo logs/tempfiles, full target
 restore/recovery downtime, a temporary restore PFILE, script-managed TDE backup
 and installation on both RAC nodes, portable auto-login wallet input, application
 PDB renaming to the target name, unchanged copied job states with external job
-handling, and a warning-only policy for current standbys are approved.
+handling, pre-copy deletion of old target datafiles/redo/tempfiles, and a
+warning-only policy for current standbys are approved.
 Original parameter/password files remain unchanged; final RAC
 startup uses the original parameter file. Standby recreation is handled by
 another script. Source credentials on the final copied CDB were already approved
