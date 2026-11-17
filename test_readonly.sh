@@ -15,6 +15,11 @@ DIAG_LIB=${DIAG_SCRIPT%/*}/dup_db.sh
 # shellcheck source=dup_db.sh
 source "$DIAG_LIB"
 LOG='' VPC_PASSWORD=''
+DIAG_REPORT_TOOL=${DIAG_LIB%/*}/lib/readonly_report.py
+if [[ -r ${DIAG_LIB%/*}/lib/readonly_cdb.sh ]]; then
+    # shellcheck source=lib/readonly_cdb.sh
+    source "${DIAG_LIB%/*}/lib/readonly_cdb.sh"
+fi
 
 diag_usage() {
     cat <<'EOF'
@@ -23,25 +28,31 @@ Usage: bash test_readonly.sh [--mode pdb|cdb] --source-cdb NAME --target-cdb NAM
        --aux-cdb NAME --aux-base PATH [--aux-wallet-root PARENT] \
        [--zdlra-alias ALIAS] [--time "YYYY-MM-DD HH:MM:SS"] \
        [--aux-sga-mb MIB] [--aux-pga-mb MIB] [--redo-reserve-mb MIB] \
+       [--restore-parallelism N] \
        [--output FILE] [--timeout SECONDS]
 
 CDB mode: use --work-dir PATH --source-wallet-dir PATH instead of all --aux-*.
-CDB checks use catalog metadata, whole-target inventories, private source TDE staging
-and retained-file copies. They never install an active wallet or run RMAN.
-Private CDB files stay outside the report at the reported work path.
+CDB checks collect independent both-node health, catalog coverage, whole-target
+inventories, private source TDE staging and retained-file copies.
+They never install an active wallet or run RMAN. Private CDB copies remain under
+--work-dir on each target host; report paths are masked.
 Existing standbys produce a recreation warning; no standby/Broker connection occurs.
 Keep lib/cdb_copy.sh and lib/cdb_files.py beside these scripts in lib/.
 
 Run manually as oracle on the designated target primary RAC node, with Bash 4+.
-Keep this script beside dup_db.sh. No internet access or extra Python packages.
+Keep this script beside dup_db.sh and lib/readonly_report.py (Python 3 required).
+For CDB diagnostics also keep lib/readonly_cdb.sh and the CDB deployment helpers.
+No internet access or extra Python packages.
 Uses /home/oracle/<TARGET_CDB>.env unchanged; it must be trusted and side-effect free.
-Only SELECT queries, srvctl config/status and broker SHOW commands against Oracle.
+Only SELECT queries and read-only wallet, ASM, Clusterware and broker inventories.
 Never starts an auxiliary, runs RMAN, takes a refresh lock, or changes apply/PDBs/services.
-Writes one private report plus temporary evidence, removed after inclusion in the report.
-Also copies the complete target WALLET_ROOT privately, validates it, then removes the copy.
+Writes one owner-only masked report; raw temporary evidence is removed at exit.
+Names, paths, addresses and database identifiers are replaced with report-local labels.
+SQL text, raw client/config logs and secret file contents are omitted from reports.
+PDB mode also copies target WALLET_ROOT privately, validates it, then removes the copy.
 --aux-wallet-root optionally selects an existing copy parent (default: --aux-base).
 Wallet contents are never included in the report; no pre-provisioned auxiliary wallet is needed.
-Default output: ./readonly_<source>_to_<target>_<UTC timestamp>_<pid>.txt
+Default output: ./readonly_<UTC timestamp>_<pid>.txt
 Existing output files are refused. The output's parent directory must already exist.
 Default timeout: 60 seconds per client command (1-3600); requires GNU timeout/gtimeout.
 --aux-base is a small filesystem work directory (PFILE, XML, audit and diagnostics).
@@ -107,7 +118,6 @@ sql() {
     else
         command=(env "ORACLE_SID=$db" "$ORACLE_HOME/bin/sqlplus" -L -s /nolog)
     fi
-    printf '%s\n' "$query" > "$out.sql"
     printf 'SQL instance=%s host=%s\n' "$db" "${host:-local}" >> "$LOG"
     {
         printf '%s\n' 'whenever oserror exit failure rollback' 'whenever sqlerror exit failure rollback'
@@ -159,6 +169,7 @@ broker_config_probe() {
 }
 
 rman() { die 'Read-only guard: this collector never runs RMAN.'; }
+cdb_main() { die 'Read-only guard: use the independent CDB diagnostic stages, never the deployment workflow.'; }
 
 # CDB catalog reads use the same bounded credential lookup as PDB diagnostics.
 discover_credentials() { diag_credentials; }
@@ -166,7 +177,7 @@ discover_credentials() { diag_credentials; }
 # Private file copies are allowed; deployment mutations remain guarded here.
 cdb_file() {
     local action=$1 out=$2; shift 2
-    case $action in probe|prepare|stage|manifest|snapshot|capacity|resource|startup-files|pfile-probe) ;;
+    case $action in clients|probe|prepare|stage|manifest|snapshot|capacity|resource|startup-files|pfile-probe) ;;
         *) die 'Read-only guard: CDB deployment file operation is prohibited.' ;; esac
     if ! diag_timeout python3 "$CDB_FILE_TOOL" "$action" home "$ORACLE_HOME" "$@" > "$out" 2> "$out.error"; then
         redact < "$out.error" | tee -a "$LOG" >&2
@@ -215,7 +226,7 @@ diag_credentials() {
     unset entry listing line
     [[ $matches == 1 && -n $VPC_PASSWORD && $VPC_PASSWORD != *'"'* && $VPC_PASSWORD != *$'\r'* && $VPC_PASSWORD != *$'\n'* ]] || die 'Cannot safely read/quote selected SEPS password.'
     export -n VPC_PASSWORD
-    printf 'Catalog alias=%s user=%s credential-index=%s (password omitted)\n' "$RA_ALIAS" "$VPC_USER" "$index"
+    printf 'Catalog SEPS credential selected unambiguously (alias, user and password omitted).\n'
 }
 
 diag_with_catalog() { diag_credentials; "$@"; }
@@ -223,18 +234,26 @@ diag_with_catalog() { diag_credentials; "$@"; }
 diag_os() {
     date -u '+UTC time: %Y-%m-%dT%H:%M:%SZ'
     uname -sr
-    hostname
-    id
+    printf 'Effective uid/gid: %s/%s\n' "$(id -u)" "$(id -g)"
     printf 'Bash: %s\n' "$BASH_VERSION"
-    cksum "$DIAG_SCRIPT" "$DIAG_LIB"
-    if [[ $MODE == cdb ]]; then cksum "${DIAG_LIB%/*}/lib/cdb_copy.sh" "$CDB_FILE_TOOL"; fi
+    local file
+    for file in "$DIAG_SCRIPT" "$DIAG_LIB" "$DIAG_REPORT_TOOL"; do
+        printf 'Script fingerprint %s: ' "${file##*/}"; cksum < "$file"
+    done
+    if [[ $MODE == cdb ]]; then
+        for file in "${DIAG_LIB%/*}/lib/cdb_copy.sh" "$CDB_FILE_TOOL" "${DIAG_LIB%/*}/lib/readonly_cdb.sh"; do
+            printf 'Script fingerprint %s: ' "${file##*/}"; cksum < "$file"
+        done
+    fi
     if [[ -r /proc/meminfo ]]; then sed -n '1,6p' /proc/meminfo; fi
 }
 
 diag_syntax() {
     bash -n "$DIAG_LIB"; bash -n "$DIAG_SCRIPT"
+    python3 -c 'import pathlib,sys; compile(pathlib.Path(sys.argv[1]).read_text(),sys.argv[1],"exec")' "$DIAG_REPORT_TOOL"
     if [[ $MODE == cdb ]]; then
         bash -n "${DIAG_LIB%/*}/lib/cdb_copy.sh"
+        bash -n "${DIAG_LIB%/*}/lib/readonly_cdb.sh"
         python3 -c 'import pathlib,sys; compile(pathlib.Path(sys.argv[1]).read_text(),sys.argv[1],"exec")' "$CDB_FILE_TOOL"
     fi
 }
@@ -247,8 +266,8 @@ diag_environment() {
 diag_clients() {
     local tool failed=0
     for tool in sqlplus rman mkstore srvctl; do
-        if [[ -x $ORACLE_HOME/bin/$tool ]]; then printf 'FOUND %s\n' "$ORACLE_HOME/bin/$tool"
-        else printf 'MISSING %s\n' "$ORACLE_HOME/bin/$tool"; failed=1; fi
+        if [[ -x $ORACLE_HOME/bin/$tool ]]; then printf 'FOUND client=%s executable=%s\n' "$tool" "$ORACLE_HOME/bin/$tool"
+        else printf 'MISSING client=%s executable=%s\n' "$tool" "$ORACLE_HOME/bin/$tool"; failed=1; fi
     done
     if [[ $MODE == cdb ]]; then printf 'DGMGRL is not required in CDB mode; all standbys need separate recreation.\n'
     elif [[ -x $ORACLE_HOME/bin/dgmgrl ]]; then printf 'OPTIONAL (topology-dependent) %s\n' "$ORACLE_HOME/bin/dgmgrl"
@@ -482,7 +501,7 @@ diag_check() {
     DIAG_LAST_DIR="$DIAG_WORK/$DIAG_TOTAL.$name"
     mkdir "$DIAG_LAST_DIR"
     DIAG_ACTIVE=$DIAG_LAST_DIR
-    printf 'Checking: %s\n' "$description"
+    printf 'Checking %s: %s\n' "$DIAG_TOTAL" "$description"
     printf '\n=== %s: %s ===\n' "$name" "$description" >> "$DIAG_OUTPUT"
     # Do not put the checked function in an if/|| expression: that disables
     # Bash errexit inside functions, potentially misreporting a failed check.
@@ -497,9 +516,11 @@ diag_check() {
     set -e
     DIAG_LAST_RC=$rc
     if ((rc == 0)); then
-        ((DIAG_PASSED+=1)); printf '[PASS] %s\n' "$name" | tee -a "$DIAG_OUTPUT"
+        ((DIAG_PASSED+=1)); printf '[PASS] check %s\n' "$DIAG_TOTAL"
+        printf '[PASS] %s\n' "$name" >> "$DIAG_OUTPUT"
     else
-        ((DIAG_FAILED+=1)); printf '[FAIL] %s (exit %s)\n' "$name" "$rc" | tee -a "$DIAG_OUTPUT"
+        ((DIAG_FAILED+=1)); printf '[FAIL] check %s (exit %s)\n' "$DIAG_TOTAL" "$rc"
+        printf '[FAIL] %s (exit %s)\n' "$name" "$rc" >> "$DIAG_OUTPUT"
     fi
     diag_append_evidence "$DIAG_LAST_DIR"
     DIAG_ACTIVE=''
@@ -507,7 +528,21 @@ diag_check() {
 
 diag_skip() {
     ((DIAG_TOTAL+=1)); ((DIAG_SKIPPED+=1))
-    printf '[SKIP] %s: %s\n' "$1" "$2" | tee -a "$DIAG_OUTPUT"
+    printf '[SKIP] check %s: %s\n' "$DIAG_TOTAL" "$2"
+    printf '[SKIP] %s: %s\n' "$1" "$2" >> "$DIAG_OUTPUT"
+}
+
+# The seed file is private, contains no passwords, and is removed with the raw
+# evidence. It also masks identifiers that happen to be ordinary status words.
+diag_privacy_seed() {
+    local name value
+    for name in SOURCE_CDB TARGET_CDB SOURCE_PDB TARGET_PDB DUP_AUX_CDB DUP_AUX_BASE \
+        DUP_AUX_WALLET_ROOT DUP_ZDLRA_ALIAS CDB_WORK_PARENT SOURCE_WALLET_DIR \
+        ORACLE_HOME TARGET_SID DB_UNIQUE_NAME SOURCE_UNIQUE TARGET_DBID SOURCE_DBID \
+        PDB_GUID TARGET_PDB_GUID WALLET RA_ALIAS VPC_USER; do
+        value=${!name:-}
+        [[ -z $value ]] || printf '%s\0' "$value" >> "$DIAG_SEED_FILE"
+    done
 }
 
 diag_finish() {
@@ -515,12 +550,22 @@ diag_finish() {
     trap - EXIT
     set +e
     if [[ -n ${DIAG_ACTIVE:-} ]]; then diag_append_evidence "$DIAG_ACTIVE"; fi
+    if [[ -n ${DIAG_CDB_RUN:-} && -d $DIAG_CDB_RUN && ${DIAG_CDB_PACKAGED:-0} != 1 ]]; then
+        diag_append_evidence "$DIAG_CDB_RUN"
+    fi
     if [[ ${DIAG_FINALIZED:-0} != 1 ]]; then
         printf '\nABORTED (exit %s). The report may be incomplete.\n' "$rc" >> "$DIAG_OUTPUT"
     fi
+    diag_privacy_seed
     unset VPC_PASSWORD
+    # Never publish raw evidence, even when collection or rendering fails.
+    if ! python3 "$DIAG_REPORT_TOOL" --input "$DIAG_OUTPUT" --output "$DIAG_REPORT_OUTPUT" --seed-file "$DIAG_SEED_FILE" 2>/dev/null; then
+        printf 'Masked diagnostic report could not be generated. Raw evidence was removed.\n' > "$DIAG_REPORT_OUTPUT"
+        printf 'Masked report generation failed.\n' >&2
+        rc=2
+    fi
     [[ -z ${DIAG_WORK:-} ]] || rm -rf -- "$DIAG_WORK"
-    printf 'Report: %s\n' "$DIAG_OUTPUT"
+    printf 'Report: %s\n' "$DIAG_REPORT_OUTPUT"
     exit "$rc"
 }
 
@@ -528,31 +573,44 @@ diag_main() {
     set -Eeuo pipefail
     umask 077
     diag_parse_args "$@"
-    DIAG_OUTPUT=${DIAG_OUTPUT:-"$PWD/readonly_${SOURCE_CDB}_to_${TARGET_CDB}_$(date -u '+%Y%m%dT%H%M%SZ')_$$.txt"}
-    DIAG_OUTPUT=$(cd "$(dirname "$DIAG_OUTPUT")" && printf '%s/%s' "$PWD" "$(basename "$DIAG_OUTPUT")") || die 'Output parent directory does not exist.'
-    (set -C; : > "$DIAG_OUTPUT") || { printf 'Refusing to overwrite output: %s\n' "$DIAG_OUTPUT" >&2; exit 2; }
+    command -v python3 >/dev/null && [[ -r $DIAG_REPORT_TOOL ]] || { printf 'Python 3 and lib/readonly_report.py are required for masked diagnostics.\n' >&2; exit 2; }
+    if [[ $MODE == cdb ]]; then
+        declare -F diag_cdb >/dev/null && declare -F cdb_source_manifest >/dev/null && [[ -r ${CDB_FILE_TOOL:-} ]] || {
+            printf 'CDB diagnostics require lib/readonly_cdb.sh, lib/cdb_copy.sh and lib/cdb_files.py.\n' >&2; exit 2;
+        }
+    fi
+    DIAG_REPORT_OUTPUT=${DIAG_OUTPUT:-"$PWD/readonly_$(date -u '+%Y%m%dT%H%M%SZ')_$$.txt"}
+    DIAG_REPORT_OUTPUT=$(cd "$(dirname "$DIAG_REPORT_OUTPUT")" && printf '%s/%s' "$PWD" "$(basename "$DIAG_REPORT_OUTPUT")") || die 'Output parent directory does not exist.'
+    (set -C; : > "$DIAG_REPORT_OUTPUT") || { printf 'Refusing to overwrite output: %s\n' "$DIAG_REPORT_OUTPUT" >&2; exit 2; }
     DIAG_TOTAL=0 DIAG_PASSED=0 DIAG_FAILED=0 DIAG_SKIPPED=0 DIAG_FINALIZED=0 DIAG_ACTIVE='' DIAG_WORK=''
+    DIAG_CDB_RUN='' DIAG_CDB_PACKAGED=0
+    DIAG_WORK=$(mktemp -d "${TMPDIR:-/tmp}/zdlra_readonly.XXXXXX") || { printf 'Cannot create private evidence directory.\n' >&2; exit 2; }
+    DIAG_WORK=$(cd "$DIAG_WORK" && pwd)
+    DIAG_OUTPUT=$DIAG_WORK/raw-report.txt
+    DIAG_SEED_FILE=$DIAG_WORK/masking-seeds
     trap diag_finish EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM HUP
-    printf 'ZDLRA read-only diagnostics v1\nSource: %s/%s (catalog only)\nTarget: %s/%s\nRequested recovery time (UTC+02:00): %s\nTimeout per client command: %ss (+5s kill grace)\n' "$SOURCE_CDB" "$SOURCE_PDB" "$TARGET_CDB" "$TARGET_PDB" "${RECOVERY_TIME:-latest available}" "$DIAG_TIMEOUT" >> "$DIAG_OUTPUT"
-    DIAG_WORK=$(mktemp -d "${TMPDIR:-/tmp}/zdlra_readonly.XXXXXX")
-    DIAG_WORK=$(cd "$DIAG_WORK" && pwd)
+    : > "$DIAG_OUTPUT"; : > "$DIAG_SEED_FILE"
+    diag_privacy_seed
+    printf 'ZDLRA read-only diagnostics v2\nMode: %s\nSource: %s/%s (catalog only)\nTarget: %s/%s\nRequested recovery time (UTC+02:00): %s\nTimeout per client command: %ss (+5s kill grace)\n' "$MODE" "$SOURCE_CDB" "$SOURCE_PDB" "$TARGET_CDB" "$TARGET_PDB" "${RECOVERY_TIME:-latest available}" "$DIAG_TIMEOUT" >> "$DIAG_OUTPUT"
+    printf 'Restore channels: %s\nRedo/recovery reserve (MiB): %s\n' "$DUP_RESTORE_PARALLELISM" "$DUP_REDO_RESERVE_MB" >> "$DIAG_OUTPUT"
     local tool
-    for tool in awk sed grep tee df date find mktemp cmp sort cksum ps ls cp chmod bash hostname id uname wc rm mkdir; do
+    for tool in awk sed grep tee df date find mktemp cmp sort cksum ps ls cp chmod bash id uname wc rm mkdir; do
         command -v "$tool" >/dev/null || { printf 'Missing required utility: %s\n' "$tool" >> "$DIAG_OUTPUT"; exit 2; }
     done
     DIAG_TIMEOUT_BIN=$(command -v timeout || command -v gtimeout) || { printf 'GNU timeout/gtimeout is required.\n' >> "$DIAG_OUTPUT"; exit 2; }
     diag_check os 'Host, account, memory and script fingerprints' diag_os
-    diag_check syntax 'Bash syntax of both scripts' diag_syntax
+    diag_check syntax 'Script and helper syntax' diag_syntax
     diag_check environment 'Load and validate standard target environment' diag_environment
     if ((DIAG_LAST_RC)); then
         diag_skip oracle-checks 'Target environment failed; Oracle/SSH/catalog checks cannot safely proceed.'
     else
         diag_load_environment >/dev/null 2>&1
+        diag_privacy_seed
         diag_check clients 'Oracle client availability and SQL*Plus version' diag_clients
         if [[ $MODE == cdb ]]; then
-            diag_check cdb 'Full-CDB prerequisites, both-node configuration, exact files, catalog coverage, source wallet staging and deletion-aware capacity' cdb_main
+            diag_cdb
         else
         diag_check identity 'Verify requested target primary CDB/root/DBID' diag_target
         local identity_dir=$DIAG_LAST_DIR
@@ -563,10 +621,11 @@ diag_main() {
             diag_check rac 'Target RAC instance and hostname inventory' diag_rac_inventory
             local rac_dir=$DIAG_LAST_DIR rac_rc=$DIAG_LAST_RC inst host state version
             DIAG_RAC_FILE=$rac_dir/rac.txt
-            local primary_rc=0
+            local primary_rc=0 primary_index=0
             if ((rac_rc == 0)); then
                 while IFS='|' read -r inst host state version; do
-                    diag_check "primary-$inst" "Primary node $inst: OS authentication, version, HSM and SQL patches" diag_primary_node "$inst" "$host"
+                    ((primary_index+=1))
+                    diag_check "primary-$primary_index" 'Primary node: OS authentication, version, HSM and SQL patches' diag_primary_node "$inst" "$host"
                     ((DIAG_LAST_RC == 0)) || primary_rc=1
                 done < "$DIAG_RAC_FILE"
             else diag_skip primary-nodes 'Complete verified RAC inventory unavailable.'; primary_rc=1; fi
@@ -589,21 +648,23 @@ diag_main() {
             if ((pdb_rc == 0)); then diag_check services 'Clusterware service snapshots and PDB/service consistency' diag_services
             else diag_skip services 'Target PDB inventory failed.'; fi
             diag_check broker 'Classify target topology from both-node configuration and broker membership where applicable' diag_broker_inventory
-            local broker_dir=$DIAG_LAST_DIR broker_rc=$DIAG_LAST_RC db nodes_dir
+            local broker_dir=$DIAG_LAST_DIR broker_rc=$DIAG_LAST_RC db nodes_dir standby_index=0 node_index
             if ((broker_rc == 0)); then
                 if [[ ! -s $broker_dir/dg.diagnostic.standbys ]]; then
                     printf 'No physical standby configured; topology classification: %s\nStandby SSH, old-PDB closure and apply checks: NOT APPLICABLE.\n' "$(cat "$broker_dir/dg.diagnostic.mode")" >> "$DIAG_OUTPUT"
                 fi
                 while IFS= read -r db; do
-                    diag_check "standby-$db" "Standby $db: broker state, configured instances and hosts" diag_standby_inventory "$db"
+                    ((standby_index+=1)); node_index=0
+                    diag_check "standby-$standby_index" 'Standby: broker state, configured instances and hosts' diag_standby_inventory "$db"
                     nodes_dir=$DIAG_LAST_DIR
                     if ((DIAG_LAST_RC == 0 && pdb_rc == 0)); then
                         # Each check writes to a fresh directory; nodes.txt is an immutable input.
                         # shellcheck disable=SC2094
                         while IFS='|' read -r inst host; do
-                            diag_check "standby-$db-$inst" "Standby $db/$inst: identity, actual apply count and target PDB observation" diag_standby_node "$db" "$inst" "$host" "$nodes_dir/nodes.txt" "$TARGET_PDB_GUID"
+                            ((node_index+=1))
+                            diag_check "standby-$standby_index-node-$node_index" 'Standby node: identity, actual apply count and target PDB observation' diag_standby_node "$db" "$inst" "$host" "$nodes_dir/nodes.txt" "$TARGET_PDB_GUID"
                         done < "$nodes_dir/nodes.txt"
-                    else diag_skip "standby-$db-nodes" 'Complete broker node or target PDB inventory unavailable.'; fi
+                    else diag_skip "standby-$standby_index-nodes" 'Complete broker node or target PDB inventory unavailable.'; fi
                 done < "$broker_dir/dg.diagnostic.standbys"
             else diag_skip standby-nodes 'Topology discovery failed/UNKNOWN; standby absence is not established.'; fi
             point="to_date('${RECOVERY_TIME:-9999-12-31 23:59:59}','YYYY-MM-DD HH24:MI:SS')"

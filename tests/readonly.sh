@@ -13,7 +13,8 @@ cp "$root/tests/fixtures/tempfile-ids-padded.txt" "$tmp/tempfile-ids-padded.txt"
 export DIAG_FIXTURE_ROOT=$tmp DIAG_FIXTURE_CASE=healthy DIAG_FIXTURE_CALLS="$tmp/calls"
 # shellcheck disable=SC2016
 export DIAG_FIXTURE_SECRET='offline*a[1]&/$secret\value'
-mkdir -p "$tmp/bin" "$tmp/oracle/bin" "$tmp/oracle/lib" "$tmp/seps" "$tmp/aux" "$tmp/target/tde" "$tmp/target/tde_seps" "$tmp/target/provider/nested" "$tmp/stage"
+mkdir -p "$tmp/bin" "$tmp/oracle/bin" "$tmp/oracle/lib" "$tmp/seps" "$tmp/aux" "$tmp/target/tde" "$tmp/target/tde_seps" "$tmp/target/provider/nested" "$tmp/stage" "$tmp/scratch"
+export TMPDIR="$tmp/scratch"
 touch "$tmp/oracle/lib/libra.so" "$tmp/seps/cwallet.sso"
 printf 'wallet-fixture-secret\000\377\n' > "$tmp/target/tde/cwallet.sso"
 cp "$tmp/target/tde/cwallet.sso" "$tmp/target/tde_seps/cwallet.sso"
@@ -264,28 +265,36 @@ run_fixture() {
     [[ $(python3 -c 'import os,stat,sys; print(oct(stat.S_IMODE(os.stat(sys.argv[1]).st_mode)))' "$tmp/$DIAG_FIXTURE_CASE.txt") == 0o600 ]]
     if grep -Fq "$DIAG_FIXTURE_SECRET" "$tmp/$DIAG_FIXTURE_CASE.txt" "$tmp/console" "$DIAG_FIXTURE_CALLS"; then exit 1; fi
     if grep -Fq 'wallet-fixture-secret' "$tmp/$DIAG_FIXTURE_CASE.txt" "$tmp/console"; then exit 1; fi
-    [[ -z $(find "$tmp/stage" "$tmp/aux" -mindepth 1 -print -quit) ]]
+    [[ -z $(find "$tmp/stage" "$tmp/aux" "$tmp/scratch" -mindepth 1 -print -quit) ]]
+    check_report_privacy "$tmp/$DIAG_FIXTURE_CASE.txt"
     if grep -Eq 'FORBIDDEN|^dgmgrl (EDIT|ENABLE|DISABLE)|^srvctl (stop|start|modify|add|remove)' "$DIAG_FIXTURE_CALLS"; then exit 1; fi
     ok
 }
 
-# Report evidence retains SQL bytes (including CRLF), while downstream
-# arithmetic and ID consumers use separately labelled normalized artifacts.
+# The shareable report keeps validated scalar evidence and omits SQL text,
+# while raw CRLF/parser fidelity is verified separately below against private files.
+check_report_privacy() {
+    python3 - "$1" "$tmp" <<'PYPRIVACY'
+import pathlib, re, sys
+report = pathlib.Path(sys.argv[1]).read_text()
+assert sys.argv[2] not in report
+for value in ('PROD', 'PRODM1', 'PRE', 'PREM1', 'PRE1', 'PRE2', 'PREST',
+              'APP', 'APPTEST', 'OTHERPDB', 'ST1', 'ST2', 'RFRAUX', 'VPC',
+              'pre_app', 'node1.example', 'node2.example', 'standby1.example',
+              'standby2.example', 'ra.example:1521/catalog',
+              '0123456789ABCDEF0123456789ABCDEF', '+DATA', '+RECO'):
+    assert not re.search(r'(?<![\w$])' + re.escape(value) + r'(?![\w$])', report), value
+assert not re.search(r'--- [^\n]*\.(?:sql|rman) ---', report), 'query or RMAN text exposed'
+assert not re.search(r'(?m)^select .* from ', report, re.I), 'SQL exposed'
+PYPRIVACY
+}
 check_tempfile_evidence() {
-    python3 - "$1" "$tmp/tempfile-ids-padded.txt" "${2:-10}" <<'PY'
-import pathlib, sys
-report = pathlib.Path(sys.argv[1]).read_bytes()
-def artifact(name):
-    marker = b'\n--- ' + name.encode() + b' ---\n'
-    assert report.count(marker) == 1, name
-    start = report.index(marker) + len(marker)
-    return report[start:report.index(b'\n--- ', start)]
-assert artifact('tempfiles.raw.txt') == pathlib.Path(sys.argv[2]).read_bytes()
-assert artifact('tempfiles.normalized.txt') == b'1\n2\n4\n5\n6\n7\n'
-size = sys.argv[3].encode()
-assert artifact('temp-size.raw.txt') == b' \t' + size + b' \t\r\n'
-assert artifact('temp-size.normalized.txt') == size + b'\n'
-PY
+    python3 - "$1" "${2:-10}" <<'PYNUMERIC'
+import pathlib, re, sys
+report = pathlib.Path(sys.argv[1]).read_text()
+assert '1\n2\n4\n5\n6\n7\n' in report
+assert re.search(r'(?m)^' + re.escape(sys.argv[2]) + r'$', report)
+PYNUMERIC
     [[ $(grep -c '^tempfile-ids$' "$DIAG_FIXTURE_CALLS") == 1 && $(grep -c '^tempfile-size$' "$DIAG_FIXTURE_CALLS") == 1 ]]
     [[ $(grep -c '^asm-space ' "$DIAG_FIXTURE_CALLS") == 2 ]]
     grep -Fq "upper('DATA')" "$DIAG_FIXTURE_CALLS"
@@ -294,18 +303,37 @@ PY
 }
 
 run_fixture healthy 0
-grep -q '\[PASS\] standby-PREST-ST2' "$tmp/healthy.txt"
+grep -q '\[PASS\] standby-1-node-2' "$tmp/healthy.txt"
 grep -q '\[PASS\] target-space' "$tmp/healthy.txt"
 grep -q 'FAIL=0 SKIP=0' "$tmp/healthy.txt"
 grep -q 'NOT RUN.*SBT allocation/media reads' "$tmp/healthy.txt"; ok
 grep -q '\[PASS\] tempfiles' "$tmp/healthy.txt"
-grep -Fq 'Space +DATA: 976.56 GiB usable; estimated requirement 2.52 GiB.' "$tmp/healthy.txt"
+grep -Eq 'Space .*976.56 GiB usable; estimated requirement 2.52 GiB\.' "$tmp/healthy.txt"
 check_tempfile_evidence "$tmp/healthy.txt"
 grep -q '\[PASS\] auxiliary' "$tmp/healthy.txt"
 grep -q 'Auxiliary wallet copy: ready;' "$tmp/healthy.txt"
 grep -q 'removed|auxiliary=not-started' "$tmp/healthy.txt"; ok
+# The default filename is safe to share and never embeds source/target names.
+mkdir "$tmp/default-output"
+: > "$DIAG_FIXTURE_CALLS"
+(cd "$tmp/default-output"; diag_main "${base[@]}" --timeout 5) > "$tmp/console" 2>&1
+mapfile -t default_reports < <(find "$tmp/default-output" -type f)
+[[ ${#default_reports[@]} == 1 && ${default_reports[0]##*/} == readonly_* ]]
+[[ ${default_reports[0]##*/} != *PROD* && ${default_reports[0]##*/} != *PRE* ]]
+check_report_privacy "${default_reports[0]}"
+[[ -z $(find "$tmp/scratch" -mindepth 1 -print -quit) ]]; ok
+# A renderer error must never publish or retain raw deployment evidence.
+printf 'raise SystemExit(1)\n' > "$tmp/broken-renderer.py"
+set +e
+(DIAG_REPORT_TOOL="$tmp/broken-renderer.py"; diag_main "${base[@]}" --output "$tmp/renderer-failed.txt" --timeout 5) > "$tmp/console" 2>&1
+rc=$?
+set -e
+[[ $rc == 2 ]]
+[[ $(cat "$tmp/renderer-failed.txt") == 'Masked diagnostic report could not be generated. Raw evidence was removed.' ]]
+check_report_privacy "$tmp/renderer-failed.txt"
+[[ -z $(find "$tmp/scratch" -mindepth 1 -print -quit) ]]; ok
 run_fixture wallet-parent 0 --aux-wallet-root "$tmp/aux"
-grep -Fq "fresh private copy parent=$tmp/aux" "$tmp/wallet-parent.txt"; ok
+grep -Fq 'fresh private copy parent=' "$tmp/wallet-parent.txt"; ok
 mv "$tmp/target/tde/cwallet.sso" "$tmp/target/tde/temporarily-hidden"
 run_fixture wallet-missing 1
 grep -q '\[FAIL\] auxiliary' "$tmp/wallet-missing.txt"
@@ -319,18 +347,18 @@ run_fixture aux-in-use 1
 grep -q '\[FAIL\] auxiliary' "$tmp/aux-in-use.txt"
 grep -q '\[PASS\] target-space' "$tmp/aux-in-use.txt"; ok
 run_fixture healthy-time 0 --time '2024-10-01 12:00:00'
-grep -Fq "resetlogs_time <= to_date('2024-10-01 12:00:00'" "$tmp/healthy-time.txt"; ok
+grep -Fq '2024-10-01 12:00:00' "$tmp/healthy-time.txt"; ok
 check_tempfile_evidence "$tmp/healthy-time.txt"
 run_fixture temp-size-zero 0
 grep -q '\[PASS\] tempfiles' "$tmp/temp-size-zero.txt"
 grep -q '\[PASS\] target-space' "$tmp/temp-size-zero.txt"
-grep -Fq 'Space +DATA: 976.56 GiB usable; estimated requirement 2.50 GiB.' "$tmp/temp-size-zero.txt"
+grep -Eq 'Space .*976.56 GiB usable; estimated requirement 2.50 GiB\.' "$tmp/temp-size-zero.txt"
 check_tempfile_evidence "$tmp/temp-size-zero.txt" 0
 run_fixture temp-size-error 1
 grep -q '\[FAIL\] tempfiles' "$tmp/temp-size-error.txt"
 grep -q '\[SKIP\] capacity' "$tmp/temp-size-error.txt"
 grep -Fq -- '--- temp-size.raw.txt ---' "$tmp/temp-size-error.txt"
-grep -Fq 'ORA-00942: fixture [REDACTED]' "$tmp/temp-size-error.txt"
+grep -Fq 'ORA-00942' "$tmp/temp-size-error.txt"
 if grep -Eq 'temp-size.normalized.txt|^asm-space ' "$tmp/temp-size-error.txt" "$DIAG_FIXTURE_CALLS"; then exit 1; fi
 ok
 run_fixture tempfiles-invalid 1
@@ -344,16 +372,16 @@ grep -q '\[PASS\] tempfiles' "$tmp/asm-low-data.txt"
 grep -q '\[FAIL\] target-space' "$tmp/asm-low-data.txt"
 grep -q 'Insufficient/unknown usable space' "$tmp/asm-low-data.txt"; ok
 run_fixture failures 1
-grep -q '\[FAIL\] primary-PRE2' "$tmp/failures.txt"
+grep -q '\[FAIL\] primary-2' "$tmp/failures.txt"
 grep -q '\[FAIL\] broker' "$tmp/failures.txt"
 grep -q '\[FAIL\] backups' "$tmp/failures.txt"
 grep -q '\[PASS\] tempfiles' "$tmp/failures.txt"
 grep -q '\[PASS\] range' "$tmp/failures.txt"
 grep -q '\[SKIP\] capacity' "$tmp/failures.txt"
-grep -Fq 'ORA-20000: catalog fixture [REDACTED]' "$tmp/failures.txt"; ok
+grep -Fq 'ORA-20000' "$tmp/failures.txt"; ok
 run_fixture standby-open 1
-grep -q '\[FAIL\] standby-PREST-ST1' "$tmp/standby-open.txt"
-grep -q '\[PASS\] standby-PREST-ST2' "$tmp/standby-open.txt"
+grep -q '\[FAIL\] standby-1-node-1' "$tmp/standby-open.txt"
+grep -q '\[PASS\] standby-1-node-2' "$tmp/standby-open.txt"
 grep -q '\[PASS\] catalog' "$tmp/standby-open.txt"; ok
 run_fixture no-standby 0
 grep -q 'No physical standby configured' "$tmp/no-standby.txt"
@@ -372,7 +400,7 @@ for scenario in topology-standalone topology-appliance topology-unconfigured pdb
         grep -q 'target PDB absent; initial creation path' "$tmp/$scenario.txt"
         grep -Fq 'NONE|STANDALONE_DISABLED' "$tmp/$scenario.txt"
         grep -q '\[PASS\] auxiliary' "$tmp/$scenario.txt"
-        grep -Fq "fresh private copy parent=$tmp/stage" "$tmp/$scenario.txt"
+        grep -Fq 'fresh private copy parent=' "$tmp/$scenario.txt"
         grep -q 'Auxiliary wallet copy: ready;' "$tmp/$scenario.txt"
         grep -q 'removed|auxiliary=not-started' "$tmp/$scenario.txt"
         grep -q '\[PASS\] tempfiles' "$tmp/$scenario.txt"
@@ -392,12 +420,12 @@ for scenario in pdb-absent-none pdb-absent-stopped pdb-absent-disabled pdb-absen
     run_fixture "$scenario" 0
     grep -q '\[PASS\] pdb' "$tmp/$scenario.txt"
     grep -q 'target PDB absent; initial creation path' "$tmp/$scenario.txt"
-    grep -Fq 'PRE2|OTHERPDB|READ WRITE' "$tmp/$scenario.txt"
+    grep -Fq '|READ WRITE' "$tmp/$scenario.txt"
     grep -q '\[PASS\] services' "$tmp/$scenario.txt"
-    grep -q '\[PASS\] primary-PRE2' "$tmp/$scenario.txt"
+    grep -q '\[PASS\] primary-2' "$tmp/$scenario.txt"
     grep -q '\[PASS\] target-space' "$tmp/$scenario.txt"
     if [[ $scenario == pdb-absent-managed ]]; then
-        grep -q '\[PASS\] standby-PREST-ST2' "$tmp/$scenario.txt"
+        grep -q '\[PASS\] standby-1-node-2' "$tmp/$scenario.txt"
         grep -q 'Requested PDB absent on this verified standby' "$tmp/$scenario.txt"
     else
         if grep -q 'oracle@standby' "$DIAG_FIXTURE_CALLS"; then exit 1; fi
@@ -408,8 +436,8 @@ run_fixture pdb-absent-running 1
 grep -q '\[FAIL\] services' "$tmp/pdb-absent-running.txt"
 grep -q 'running with no corresponding target PDB' "$tmp/pdb-absent-running.txt"; ok
 run_fixture pdb-absent-conflict 1
-grep -q '\[FAIL\] standby-PREST-ST1' "$tmp/pdb-absent-conflict.txt"
-grep -q '\[FAIL\] standby-PREST-ST2' "$tmp/pdb-absent-conflict.txt"; ok
+grep -q '\[FAIL\] standby-1-node-1' "$tmp/pdb-absent-conflict.txt"
+grep -q '\[FAIL\] standby-1-node-2' "$tmp/pdb-absent-conflict.txt"; ok
 for scenario in pdb-partial pdb-guid pdb-query-error; do
     run_fixture "$scenario" 1
     grep -q '\[FAIL\] pdb' "$tmp/$scenario.txt"

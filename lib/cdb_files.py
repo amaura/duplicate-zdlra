@@ -202,6 +202,15 @@ def remove_one(req):
 
 def worker(req):
     action = req['action']
+    if action == 'clients':
+        # Diagnostic inventory only: do not execute RMAN or load the SBT library.
+        home = path(req['home'])
+        return {'clients': {name: (home / 'bin' / name).is_file() and
+                           os.access(home / 'bin' / name, os.X_OK)
+                           for name in ('sqlplus', 'rman', 'mkstore', 'srvctl', 'asmcmd')},
+                'sbt_library_readable': (home / 'lib' / 'libra.so').is_file() and
+                                        os.access(home / 'lib' / 'libra.so', os.R_OK),
+                'python': list(sys.version_info[:2])}
     if action == 'pfile-probe':
         sid = req['sid']
         require(re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*', sid), 'Unsafe SID')

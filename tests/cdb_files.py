@@ -30,6 +30,29 @@ class Files(unittest.TestCase):
         self.stage = self.base / 'staged'
         self.work = self.base / 'recovery'
 
+    def test_client_inventory_never_executes_clients(self):
+        home = self.base / 'oracle'
+        (home / 'bin').mkdir(parents=True)
+        (home / 'lib').mkdir()
+        tools = ('sqlplus', 'rman', 'mkstore', 'srvctl', 'asmcmd')
+        for name in tools:
+            executable = home / 'bin' / name
+            executable.write_text('#!/bin/sh\nexit 99\n')
+            executable.chmod(0o700)
+        (home / 'lib' / 'libra.so').write_bytes(b'not-a-real-library')
+        with patch.object(f.subprocess, 'run', side_effect=AssertionError('Client execution prohibited')):
+            result = f.worker({'action': 'clients', 'home': str(home)})
+            self.assertEqual(result['clients'], dict.fromkeys(tools, True))
+            self.assertTrue(result['sbt_library_readable'])
+            self.assertEqual(len(result['python']), 2)
+            (home / 'bin' / 'rman').chmod(0o600)
+            (home / 'bin' / 'asmcmd').unlink()
+            (home / 'lib' / 'libra.so').unlink()
+            result = f.worker({'action': 'clients', 'home': str(home)})
+            self.assertFalse(result['clients']['rman'])
+            self.assertFalse(result['clients']['asmcmd'])
+            self.assertFalse(result['sbt_library_readable'])
+
     def stage_wallet(self):
         return f.worker({'action':'stage', 'source':str(self.source), 'dest':str(self.stage), 'root':str(self.root)})
 
